@@ -22,7 +22,10 @@ from config import FEISHU_BITABLE
 app = Flask(__name__)
 CORS(app)
 # 若 .env 里写了 APP_SECRET_KEY= 但留空，getenv 会得到 ""，Flask 会报 session 不可用
-_secret = (os.getenv("APP_SECRET_KEY") or "").strip()
+# PP_SECRET_KEY：兼容 Railway 等处误填变量名（与 APP_SECRET_KEY 等价）
+_secret = (
+    (os.getenv("APP_SECRET_KEY") or os.getenv("PP_SECRET_KEY") or "").strip()
+)
 app.secret_key = _secret or "weather-v2-dev-secret"
 
 USERS = {

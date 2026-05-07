@@ -31,10 +31,18 @@ try:
 except ImportError:
     pass
 
-# 配置（可用环境变量覆盖，便于部署与轮换 token）
+# 配置（仅从环境变量读取；本地用 .env，Railway 在 Variables 中填写）
+# 勿在代码中写死应用 Token，避免泄露且防止空字符串变量意外禁用 sign-in。
 BI_BASE = os.getenv("GUANDATA_BASE_URL", "https://bi.marius.vip").rstrip("/")
-APP_TOKEN = os.getenv("GUANDATA_APP_TOKEN", "d3dc3da5b8356403e882269e")
-LOGIN_ID = os.getenv("GUANDATA_LOGIN_ID", "admin@guandata.com")
+APP_TOKEN = (os.getenv("GUANDATA_APP_TOKEN") or "").strip()
+LOGIN_ID = (os.getenv("GUANDATA_LOGIN_ID") or "").strip()
+
+_env_x_warn = (os.getenv("GUANDATA_X_AUTH_TOKEN") or "").strip()
+if _env_x_warn and not (APP_TOKEN and LOGIN_ID):
+    print(
+        "⚠ 观远：已设置 GUANDATA_X_AUTH_TOKEN 但未配置 GUANDATA_APP_TOKEN+GUANDATA_LOGIN_ID；"
+        "Token 过期后无法自动续期，请在 Railway 补充 sign-in 凭证并去掉过期 X_AUTH。"
+    )
 
 
 def _default_token_cache_path() -> str:
@@ -73,7 +81,17 @@ class GuanBI:
             return False
         if data.get("result") == "ok":
             return False
-        err = str(data.get("error") or data.get("message") or "").lower()
+        # 观远卡片接口常见：HTTP 401 + {"status":1018,"message":"Not Login or token expired",...}
+        st = data.get("status")
+        if st == 1018 or st == "1018":
+            return True
+        err = str(data.get("error") or data.get("message") or "")
+        detail = data.get("detail")
+        if isinstance(detail, dict):
+            err += " " + json.dumps(detail, ensure_ascii=False)
+        elif detail is not None:
+            err += " " + str(detail)
+        err_l = err.lower()
         hints = (
             "unauthorized",
             "forbidden",
@@ -81,6 +99,7 @@ class GuanBI:
             "auth",
             "login",
             "sign-in",
+            "not login",
             "登录",
             "认证",
             "权限",
@@ -89,7 +108,15 @@ class GuanBI:
             "expire",
             "invalid",
         )
-        return any(h in err for h in hints)
+        if any(h in err_l for h in hints):
+            return True
+        try:
+            blob = json.dumps(data, ensure_ascii=False).lower()
+            if "token expired" in blob or "not login" in blob:
+                return True
+        except (TypeError, ValueError):
+            pass
+        return False
 
     def _invalidate_token_and_page_caches(self) -> None:
         self.x_auth_token = None
@@ -198,8 +225,8 @@ class GuanBI:
             self.x_auth_token = env_x_token
             if not force:
                 print(
-                    "⚠ 使用 GUANDATA_X_AUTH_TOKEN（无 APP_TOKEN+LOGIN_ID 时无法自动刷新；"
-                    "Railway 建议配置 sign-in 凭证）"
+                    "⚠ 使用 GUANDATA_X_AUTH_TOKEN（未配置 GUANDATA_APP_TOKEN+GUANDATA_LOGIN_ID，"
+                    "过期后无法自动换票；Railway 请改为 sign-in 并删除过期的 X_AUTH）"
                 )
             return True
 
@@ -394,10 +421,22 @@ class GuanBI:
             last_err = str(data.get("error") or data.get("message") or resp.text[:400])
             if attempt == 0 and self._is_auth_error(resp, data):
                 self.login(force=True)
+                if not self.x_auth_token:
+                    raise Exception(
+                        "观远鉴权失败：无法取得 X-Auth-Token；请在 Railway 配置 "
+                        "GUANDATA_APP_TOKEN + GUANDATA_LOGIN_ID。"
+                    )
                 continue
             break
+        hint = ""
+        err_low = last_err.lower()
+        if "1018" in last_err or "token expired" in err_low or "not login" in err_low:
+            hint = (
+                " 【处理】Railway Variables：填写 GUANDATA_APP_TOKEN、GUANDATA_LOGIN_ID，"
+                "删除已过期的 GUANDATA_X_AUTH_TOKEN，保存后重新部署。"
+            )
         raise Exception(
-            f"获取卡片数据失败: {last_err} (HTTP {resp.status_code}, card_id={card_id})"
+            f"获取卡片数据失败: {last_err} (HTTP {resp.status_code}, card_id={card_id}){hint}"
         )
     
     def get_card_raw(self, card_id: str, view: str = "GRAPH") -> Dict:

@@ -11,7 +11,7 @@ BI 库存数据服务模块 V3
 import sys
 import os
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 # 添加 guandata.py 到路径
@@ -87,6 +87,29 @@ class BIInventoryServiceV3:
         print(f"✓ 使用页面首张卡片: {c0.get('name', '')} ({c0['cdId']})")
         return c0["cdId"]
 
+    def _card_views_to_try(self) -> List[str]:
+        """观远卡片 /data 的 view；不同卡片在 GRAPH 下可能无 row.values，需换 TABLE 等。"""
+        raw = (os.getenv("GUANDATA_CARD_VIEW") or "").strip()
+        if raw:
+            return [v.strip() for v in raw.split(",") if v.strip()]
+        return ["GRAPH", "TABLE", "LIST", "DETAIL", "GRID"]
+
+    def _chart_rows_pair(self, raw: Dict[str, Any]) -> Tuple[Dict[str, Any], list, list]:
+        """从卡片原始响应取出 (row_values, data_rows)；兼容少量字段差异。"""
+        chart = raw.get("chartMain", {}) or raw.get("chart", {}) or {}
+        row_block = chart.get("row") or {}
+        row_values = row_block.get("values") or row_block.get("value") or []
+        data_rows = chart.get("data") or []
+        return chart, row_values, data_rows
+
+    def _log_chart_diagnosis(self, card_id: str, raw: Dict[str, Any]) -> None:
+        chart, rv, dr = self._chart_rows_pair(raw)
+        print(
+            f"⚠️ 卡片 {card_id} 诊断: chartMain.keys={list(chart.keys())[:12]}, "
+            f"row.keys={list((chart.get('row') or {}).keys())}, "
+            f"len(row.values)={len(rv) if rv else 0}, len(data)={len(dr) if dr else 0}"
+        )
+
     def _get_effective_card_id(self, bi: GuanBI) -> str:
         if self._resolved_card_id:
             return self._resolved_card_id
@@ -135,17 +158,52 @@ class BIInventoryServiceV3:
         """
         bi = create_bi()
         card_id = self._get_effective_card_id(bi)
-        try:
-            raw = bi.get_card_raw(card_id)
-        except Exception as e:
-            print(f"⚠️ 观远卡片数据请求失败 (card_id={card_id}): {e}")
-            raise
+        raw: Dict[str, Any] = {}
+        last_exc: Optional[Exception] = None
+        for view in self._card_views_to_try():
+            try:
+                cand = bi.get_card_raw(card_id, view=view)
+            except Exception as e:
+                last_exc = e
+                print(f"○ 卡片 {card_id} view={view} 请求异常: {e}")
+                continue
+            _, row_values, data_rows = self._chart_rows_pair(cand)
+            if row_values and data_rows:
+                raw = cand
+                print(f"✓ 卡片 {card_id} 使用 view={view}，原始行 row={len(row_values)}, data={len(data_rows)}")
+                break
+            print(
+                f"○ 卡片 {card_id} view={view} 无对齐数据: "
+                f"row_values={len(row_values) if row_values else 0}, data={len(data_rows) if data_rows else 0}"
+            )
 
-        chart = raw.get("chartMain", {}) or {}
-        row_values = chart.get("row", {}).get("values", [])
-        data_rows = chart.get("data", [])
+        if not raw:
+            if last_exc:
+                print(f"⚠️ 观远卡片数据请求失败 (card_id={card_id}): {last_exc}")
+                raise last_exc
+            print(f"⚠️ 卡片 {card_id} 所有 view 均无有效行列结构")
+            return []
 
-        if not row_values or not data_rows or len(row_values) != len(data_rows):
+        _, row_values, data_rows = self._chart_rows_pair(raw)
+
+        if len(row_values) != len(data_rows):
+            n = min(len(row_values), len(data_rows))
+            if n == 0:
+                self._log_chart_diagnosis(card_id, raw)
+                print(
+                    f"⚠️ 卡片 {card_id} row/data 长度不一致且无法截断: "
+                    f"{len(row_values)} vs {len(data_rows)}。请设置 GUANDATA_CARD_ID 指向明细表卡片。"
+                )
+                return []
+            print(
+                f"⚠️ 卡片 {card_id} row/data 长度不一致 ({len(row_values)} vs {len(data_rows)})，"
+                f"按前 {n} 行截断解析"
+            )
+            row_values = row_values[:n]
+            data_rows = data_rows[:n]
+
+        if not row_values or not data_rows:
+            self._log_chart_diagnosis(card_id, raw)
             print(
                 f"⚠️ 卡片 {card_id} 返回结构异常: row={len(row_values) if row_values else 0}, "
                 f"data={len(data_rows) if data_rows else 0}。可设置 GUANDATA_CARD_ID 指定正确明细表卡片。"
@@ -153,9 +211,11 @@ class BIInventoryServiceV3:
             return []
 
         parsed_rows: List[Dict[str, Any]] = []
+        skipped_short = 0
         for idx, dims in enumerate(row_values):
             metrics = data_rows[idx]
             if len(dims) < 7 or len(metrics) < 14:
+                skipped_short += 1
                 continue
 
             try:
@@ -202,6 +262,11 @@ class BIInventoryServiceV3:
             except Exception:
                 continue
 
+        if not parsed_rows and skipped_short:
+            print(
+                f"⚠️ 卡片 {card_id} 有 {skipped_short} 行因维度/指标列数不足被跳过 "
+                f"（需 dim≥7 且 metrics≥14）。请确认 GUANDATA_CARD_ID 是否为「拉新款式表现」类明细表。"
+            )
         print(f"✓ API路径获取到 {len(parsed_rows)} 条记录")
         return parsed_rows
 
