@@ -496,18 +496,88 @@ class GuanBI:
         return None
     
     def find_card(self, page_id: str, name_keyword: str) -> Optional[Dict]:
-        """在页面中搜索卡片"""
+        """在页面中搜索卡片（支持逗号分隔多个关键字，命中任一即匹配）"""
         detail = self.get_page_detail(page_id)
-        cards = detail.get("cards") or detail.get("cardList") or []
+        cards = self._collect_page_cards(detail)
+        kws = [k.strip() for k in (name_keyword or "").split(",") if k.strip()]
+        if not kws:
+            return None
         for c in cards:
-            nm = c.get("name", "") or c.get("title", "")
-            if name_keyword in nm:
+            label = self._card_label(c)
+            if any(k in label for k in kws):
                 return c
         return None
-    
+
     @staticmethod
     def _card_id(c: Dict) -> str:
         return str(c.get("cdId") or c.get("id") or "").strip()
+
+    @staticmethod
+    def _card_label(c: Dict) -> str:
+        """合并观远页面详情里可能出现的多字段标题，便于按 GUANDATA_CARD_NAME_KEYWORD 匹配。"""
+        parts: List[str] = []
+        for k in (
+            "name",
+            "title",
+            "cardName",
+            "cdName",
+            "caption",
+            "chartName",
+            "originName",
+        ):
+            v = c.get(k)
+            if isinstance(v, str) and v.strip():
+                parts.append(v.strip())
+        for sub in (c.get("setting"), c.get("domSetting"), c.get("config")):
+            if isinstance(sub, dict):
+                for k in ("name", "title", "cardTitle", "chartTitle"):
+                    v = sub.get(k)
+                    if isinstance(v, str) and v.strip():
+                        parts.append(v.strip())
+        return " ".join(parts)
+
+    @staticmethod
+    def _collect_page_cards(detail: Dict) -> List[Dict]:
+        """
+        页面详情中的卡片可能在顶层 cards，也可能在 tabs/sheet 或 dom 布局内；
+        仅扫顶层首张会导致 GUANDATA_CARD_NAME_KEYWORD 永远匹配不到其它 Tab 上的明细表。
+        """
+        seen: set = set()
+        acc: List[Dict] = []
+
+        def add_card_dict(node: Dict) -> None:
+            cid = GuanBI._card_id(node)
+            if not cid or cid in seen:
+                return
+            seen.add(cid)
+            acc.append(node)
+
+        def from_sequence(seq) -> None:
+            if not isinstance(seq, list):
+                return
+            for item in seq:
+                if not isinstance(item, dict):
+                    continue
+                if GuanBI._card_id(item):
+                    add_card_dict(item)
+                    continue
+                for key in ("card", "chart", "widget", "content"):
+                    nested = item.get(key)
+                    if isinstance(nested, dict) and GuanBI._card_id(nested):
+                        add_card_dict(nested)
+                        break
+
+        from_sequence(detail.get("cards") or detail.get("cardList") or [])
+        from_sequence(detail.get("doms") or [])
+
+        for key in ("tabs", "pageTabs", "tabList", "sheetList"):
+            for tab in detail.get(key) or []:
+                if not isinstance(tab, dict):
+                    continue
+                from_sequence(tab.get("cards") or tab.get("cardList") or [])
+                from_sequence(tab.get("doms") or [])
+
+        return acc
 
     @staticmethod
     def _page_id(p: Dict) -> str:
@@ -516,7 +586,7 @@ class GuanBI:
     def get_page_cards_summary(self, pg_id: str) -> List[Dict]:
         """获取页面卡片摘要（名称、ID、类型）"""
         detail = self.get_page_detail(pg_id)
-        cards = detail.get("cards") or detail.get("cardList") or []
+        cards = self._collect_page_cards(detail)
         out: List[Dict] = []
         for c in cards:
             cid = self._card_id(c)
@@ -524,7 +594,7 @@ class GuanBI:
                 continue
             out.append({
                 "cdId": cid,
-                "name": c.get("name", "") or c.get("title", ""),
+                "name": self._card_label(c),
                 "type": c.get("cdType") or c.get("type", "") or "",
             })
         return out

@@ -66,14 +66,30 @@ class BIInventoryServiceV3:
                 "或在配置中设置 inventory.card_id / GUANDATA_CARD_ID（观远卡片 cdId）。"
             )
 
-        kw = (cfg.get("card_name_keyword") or "").strip()
-        if kw:
+        kw_raw = (cfg.get("card_name_keyword") or "").strip()
+        keywords = [k.strip() for k in kw_raw.split(",") if k.strip()]
+        if keywords:
             for c in cards:
                 name = c.get("name") or ""
-                if kw in name:
+                if any(k in name for k in keywords):
                     cid = c["cdId"]
-                    print(f"✓ 按名称关键字「{kw}」选中卡片: {name} ({cid})")
+                    shown = " / ".join(f"「{k}」" for k in keywords)
+                    print(f"✓ 按名称关键字 {shown} 选中卡片: {name} ({cid})")
                     return cid
+            print(
+                "⚠️ 未在页面卡片标题中匹配到关键字 "
+                + " / ".join(f"「{k}」" for k in keywords)
+                + "（已合并多 Tab / setting 等字段）。将按类型/首张回退。"
+            )
+            for c in cards[:40]:
+                nm = (c.get("name") or "")[:100]
+                print(f"    · {nm} ({c.get('cdId')}) type={c.get('type', '')}")
+            if len(cards) > 40:
+                print(f"    · … 共 {len(cards)} 张卡片")
+            print(
+                "  请核对观远卡片名是否含上述关键字；或直接设置 GUANDATA_CARD_ID / "
+                "guandata_sources.json 中 inventory.card_id 为目标卡片 cdId。"
+            )
 
         prefer = ("TABLE", "DETAIL", "GRID", "MERGE", "LIST", "PIVOT", "明细", "列表", "表格")
         for c in cards:
