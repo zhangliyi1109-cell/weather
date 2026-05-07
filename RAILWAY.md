@@ -18,8 +18,11 @@
 | `FLASK_DEBUG` | 生产设 `false` |
 | `USE_BI_DATA` | `true` 拉观远；无凭证可 `false` 走快照/空数据 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_BITABLE_APP_TOKEN` / `FEISHU_BITABLE_TABLE_ID` | 飞书（不用飞书可留空） |
-| `GUANDATA_BASE_URL` / `GUANDATA_APP_TOKEN` 或 `GUANDATA_LOGIN_ID` + 登录相关 | 观远 Public API，见 `.env.example` 全文 |
-| `GUANDATA_SOURCES_FILE` | 默认 `guandata_sources.json`（已随代码提供） |
+| `GUANDATA_BASE_URL` | 观远站点根 URL |
+| **`GUANDATA_APP_TOKEN` + `GUANDATA_LOGIN_ID`** | **推荐**：走 `/public-api/user/loginId/sign-in` 自动换取 `X-Auth-Token`，过期前写缓存并在接口返回认证错误时自动重登 |
+| `GUANDATA_X_AUTH_TOKEN` | 仅临时调试；生产勿只靠此项（无法自动续期）。若必须只用粘贴 Token，设 `GUANDATA_ONLY_ENV_X_AUTH_TOKEN=true` |
+| `GUANDATA_TOKEN_CACHE_PATH` / `GUANDATA_RUNTIME_DIR` | 可选；默认写到系统临时目录（容器内可写） |
+| `GUANDATA_SOURCES_FILE` | 默认 `guandata_sources.json` |
 
 更全说明见项目根下 **`weather_v2/.env.example`**。
 

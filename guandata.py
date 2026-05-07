@@ -21,6 +21,7 @@ import os
 import sys
 import time
 import re
+import tempfile
 from typing import Dict, List, Optional, Any, Union, Callable
 from pathlib import Path
 
@@ -34,7 +35,20 @@ except ImportError:
 BI_BASE = os.getenv("GUANDATA_BASE_URL", "https://bi.marius.vip").rstrip("/")
 APP_TOKEN = os.getenv("GUANDATA_APP_TOKEN", "d3dc3da5b8356403e882269e")
 LOGIN_ID = os.getenv("GUANDATA_LOGIN_ID", "admin@guandata.com")
-TOKEN_CACHE_FILE = os.path.expanduser("~/.openclaw/skills/guandata-bi/scripts/.token_cache")
+
+
+def _default_token_cache_path() -> str:
+    """Railway/容器默认可写目录；可通过 GUANDATA_TOKEN_CACHE_PATH 覆盖。"""
+    explicit = os.getenv("GUANDATA_TOKEN_CACHE_PATH", "").strip()
+    if explicit:
+        return os.path.expanduser(explicit)
+    runtime = os.getenv("GUANDATA_RUNTIME_DIR", "").strip()
+    if runtime:
+        return os.path.join(os.path.expanduser(runtime), "guandata_token_cache.json")
+    return os.path.join(tempfile.gettempdir(), "guandata_token_cache.json")
+
+
+TOKEN_CACHE_FILE = _default_token_cache_path()
 
 
 class GuanBI:
@@ -49,7 +63,39 @@ class GuanBI:
         self.token_cache_file = token_cache_file
         self._page_cache: Dict[str, Any] = {}
         self._page_detail_cache: Dict[str, Any] = {}
-    
+
+    @staticmethod
+    def _is_auth_error(resp: requests.Response, data: Any) -> bool:
+        """判断是否因 Token 失效或未授权（用于触发 sign-in 刷新）。"""
+        if resp is not None and resp.status_code in (401, 403):
+            return True
+        if not isinstance(data, dict):
+            return False
+        if data.get("result") == "ok":
+            return False
+        err = str(data.get("error") or data.get("message") or "").lower()
+        hints = (
+            "unauthorized",
+            "forbidden",
+            "token",
+            "auth",
+            "login",
+            "sign-in",
+            "登录",
+            "认证",
+            "权限",
+            "过期",
+            "失效",
+            "expire",
+            "invalid",
+        )
+        return any(h in err for h in hints)
+
+    def _invalidate_token_and_page_caches(self) -> None:
+        self.x_auth_token = None
+        self._page_cache.clear()
+        self._page_detail_cache.clear()
+
     def _load_cached_token(self) -> bool:
         """尝试加载缓存的 token"""
         try:
@@ -75,7 +121,9 @@ class GuanBI:
             expire_at_str: 过期时间字符串（ISO格式），可选
         """
         try:
-            os.makedirs(os.path.dirname(self.token_cache_file), exist_ok=True)
+            parent = os.path.dirname(self.token_cache_file)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             # 计算过期时间
             expire_at = time.time() + 24 * 3600  # 默认24小时
             
@@ -97,30 +145,71 @@ class GuanBI:
             print(f"Warning: 保存 Token 缓存失败: {e}")
     
     def login(self, force: bool = False) -> bool:
-        """登录获取 X-Auth-Token"""
+        """
+        获取 X-Auth-Token。
+
+        Railway 推荐：配置 GUANDATA_APP_TOKEN + GUANDATA_LOGIN_ID，通过 sign-in 自动换票并写入缓存；
+        GUANDATA_X_AUTH_TOKEN 有时效，仅靠环境变量无法续期。
+
+        若必须只用粘贴的 X-Auth-Token：设 GUANDATA_ONLY_ENV_X_AUTH_TOKEN=true。
+        """
+        only_env = os.getenv("GUANDATA_ONLY_ENV_X_AUTH_TOKEN", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         env_x_token = os.getenv("GUANDATA_X_AUTH_TOKEN", "").strip()
-        if env_x_token and not force:
+        has_signin = bool(str(APP_TOKEN).strip() and str(LOGIN_ID).strip())
+
+        if only_env and env_x_token:
             self.x_auth_token = env_x_token
-            print("✓ 使用环境变量 GUANDATA_X_AUTH_TOKEN（跳过 sign-in 接口）")
+            print(
+                "✓ 使用 GUANDATA_X_AUTH_TOKEN（GUANDATA_ONLY_ENV_X_AUTH_TOKEN=true，不会自动 sign-in）"
+            )
             return True
 
-        # 尝试加载缓存
+        if has_signin:
+            if not force and self._load_cached_token():
+                return True
+            if force:
+                self._invalidate_token_and_page_caches()
+            resp = self.session.post(
+                f"{BI_BASE}/public-api/user/loginId/sign-in",
+                json={"token": APP_TOKEN, "loginId": LOGIN_ID},
+                timeout=self.REQUEST_TIMEOUT,
+            )
+            try:
+                data = resp.json()
+            except Exception:
+                print(f"✗ 登录失败: 响应非 JSON HTTP {resp.status_code}")
+                return False
+            if data.get("result") == "ok":
+                self.x_auth_token = data["response"]["token"]
+                expire_at_str = data["response"].get("expireAt", "未知")
+                print(f"✓ 登录成功，Token 有效期至: {expire_at_str}")
+                self._save_token_cache(expire_at_str)
+                self._page_cache.clear()
+                self._page_detail_cache.clear()
+                return True
+            print(f"✗ 登录失败: {data.get('error')}")
+            return False
+
+        if env_x_token and not has_signin:
+            self.x_auth_token = env_x_token
+            if not force:
+                print(
+                    "⚠ 使用 GUANDATA_X_AUTH_TOKEN（无 APP_TOKEN+LOGIN_ID 时无法自动刷新；"
+                    "Railway 建议配置 sign-in 凭证）"
+                )
+            return True
+
         if not force and self._load_cached_token():
             return True
-        
-        resp = self.session.post(
-            f"{BI_BASE}/public-api/user/loginId/sign-in",
-            json={"token": APP_TOKEN, "loginId": LOGIN_ID},
-            timeout=self.REQUEST_TIMEOUT,
+
+        print(
+            "✗ 观远未配置：请设置 GUANDATA_APP_TOKEN + GUANDATA_LOGIN_ID，"
+            "或临时设置 GUANDATA_X_AUTH_TOKEN"
         )
-        data = resp.json()
-        if data.get("result") == "ok":
-            self.x_auth_token = data["response"]["token"]
-            expire_at_str = data["response"].get("expireAt", "未知")
-            print(f"✓ 登录成功，Token 有效期至: {expire_at_str}")
-            self._save_token_cache(expire_at_str)
-            return True
-        print(f"✗ 登录失败: {data.get('error')}")
         return False
     
     def _headers(self) -> Dict[str, str]:
@@ -191,55 +280,82 @@ class GuanBI:
         if use_cache and 'page_list' in self._page_cache:
             return self._page_cache['page_list']
 
-        if not self.x_auth_token:
-            self.login()
-
-        resp = self.session.post(
-            f"{BI_BASE}/public-api/page/list",
-            headers=self._headers(),
-            json={"token": APP_TOKEN},
-            timeout=self.REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        if data.get("result") == "ok":
-            pages = data.get("response", [])
-            self._page_cache['page_list'] = pages
-            return pages
-        raise Exception(f"获取页面列表失败: {data.get('error')}")
-    
-    def get_page_detail(self, pg_id: str, use_cache: bool = True) -> Dict:
-        """获取页面详情（含卡片列表）"""
-        if use_cache and pg_id in self._page_detail_cache:
-            return self._page_detail_cache[pg_id]
-
-        if not self.x_auth_token:
-            self.login()
-
-        header_sets = [
-            {
-                "Content-Type": "application/json",
-                "token": APP_TOKEN,
-                "X-Auth-Token": self.x_auth_token or "",
-            },
-            {"Content-Type": "application/json", "token": APP_TOKEN},
-        ]
         last_err = ""
-        for hdr in header_sets:
-            resp = self.session.get(
-                f"{BI_BASE}/public-api/page/{pg_id}",
-                headers=hdr,
+        for attempt in range(2):
+            if not self.x_auth_token:
+                self.login()
+            resp = self.session.post(
+                f"{BI_BASE}/public-api/page/list",
+                headers=self._headers(),
+                json={"token": APP_TOKEN},
                 timeout=self.REQUEST_TIMEOUT,
             )
             try:
                 data = resp.json()
             except Exception:
                 last_err = f"非 JSON 响应 HTTP {resp.status_code}"
-                continue
+                if attempt == 0 and resp.status_code in (401, 403):
+                    self.login(force=True)
+                    continue
+                raise Exception(f"获取页面列表失败: {last_err}")
             if data.get("result") == "ok":
-                detail = data.get("response", {})
-                self._page_detail_cache[pg_id] = detail
-                return detail
+                pages = data.get("response", [])
+                self._page_cache['page_list'] = pages
+                return pages
             last_err = str(data.get("error") or data.get("message") or resp.text[:300])
+            if attempt == 0 and self._is_auth_error(resp, data):
+                self.login(force=True)
+                continue
+            break
+        raise Exception(f"获取页面列表失败: {last_err}")
+    
+    def get_page_detail(self, pg_id: str, use_cache: bool = True) -> Dict:
+        """获取页面详情（含卡片列表）"""
+        if use_cache and pg_id in self._page_detail_cache:
+            return self._page_detail_cache[pg_id]
+
+        last_err = ""
+
+        for attempt in range(2):
+            if not self.x_auth_token:
+                self.login()
+
+            header_sets = [
+                {
+                    "Content-Type": "application/json",
+                    "token": APP_TOKEN,
+                    "X-Auth-Token": self.x_auth_token or "",
+                },
+                {"Content-Type": "application/json", "token": APP_TOKEN},
+            ]
+            saw_auth_error = False
+
+            for hdr in header_sets:
+                resp = self.session.get(
+                    f"{BI_BASE}/public-api/page/{pg_id}",
+                    headers=hdr,
+                    timeout=self.REQUEST_TIMEOUT,
+                )
+                try:
+                    data = resp.json()
+                except Exception:
+                    last_err = f"非 JSON 响应 HTTP {resp.status_code}"
+                    if resp.status_code in (401, 403):
+                        saw_auth_error = True
+                    continue
+                if data.get("result") == "ok":
+                    detail = data.get("response", {})
+                    self._page_detail_cache[pg_id] = detail
+                    return detail
+                last_err = str(data.get("error") or data.get("message") or resp.text[:300])
+                if self._is_auth_error(resp, data):
+                    saw_auth_error = True
+
+            if attempt == 0 and saw_auth_error:
+                self.login(force=True)
+                continue
+            break
+
         raise Exception(f"获取页面详情失败: {last_err}")
     
     def get_card_data(self, card_id: str, view: str = "GRAPH", auto_parse: bool = True) -> Union[Dict, Any]:
@@ -254,23 +370,35 @@ class GuanBI:
             如果 auto_parse=True，返回解析后的数据（包含 rows 列表）
             否则返回原始数据
         """
-        resp = self.session.post(
-            f"{BI_BASE}/public-api/card/{card_id}/data",
-            headers=self._headers(),
-            json={"view": view},
-            timeout=self.REQUEST_TIMEOUT,
+        last_err = ""
+        for attempt in range(2):
+            if not self.x_auth_token:
+                self.login()
+            resp = self.session.post(
+                f"{BI_BASE}/public-api/card/{card_id}/data",
+                headers=self._headers(),
+                json={"view": view},
+                timeout=self.REQUEST_TIMEOUT,
+            )
+            try:
+                data = resp.json()
+            except Exception:
+                raise Exception(
+                    f"获取卡片数据失败: 响应非 JSON，HTTP {resp.status_code} {resp.text[:400]}"
+                )
+            if data.get("result") == "ok":
+                card_data = data.get("response", {})
+                if auto_parse:
+                    return self._parse_card_data(card_data)
+                return card_data
+            last_err = str(data.get("error") or data.get("message") or resp.text[:400])
+            if attempt == 0 and self._is_auth_error(resp, data):
+                self.login(force=True)
+                continue
+            break
+        raise Exception(
+            f"获取卡片数据失败: {last_err} (HTTP {resp.status_code}, card_id={card_id})"
         )
-        try:
-            data = resp.json()
-        except Exception:
-            raise Exception(f"获取卡片数据失败: 响应非 JSON，HTTP {resp.status_code} {resp.text[:400]}")
-        if data.get("result") == "ok":
-            card_data = data.get("response", {})
-            if auto_parse:
-                return self._parse_card_data(card_data)
-            return card_data
-        err = data.get("error") or data.get("message") or resp.text[:400]
-        raise Exception(f"获取卡片数据失败: {err} (HTTP {resp.status_code}, card_id={card_id})")
     
     def get_card_raw(self, card_id: str, view: str = "GRAPH") -> Dict:
         """获取卡片原始数据（不解析）"""
@@ -278,27 +406,47 @@ class GuanBI:
     
     def get_dataset_data(self, ds_id: str, limit: int = 10, offset: int = 0) -> Dict:
         """获取数据集数据"""
-        resp = self.session.post(
-            f"{BI_BASE}/public-api/data-source/{ds_id}/data",
-            headers=self._headers(),
-            json={"limit": limit, "offset": offset}
-        )
-        data = resp.json()
-        if data.get("result") == "ok":
-            return data.get("response", {})
-        raise Exception(f"获取数据集数据失败: {data.get('error')}")
+        last_err = ""
+        for attempt in range(2):
+            if not self.x_auth_token:
+                self.login()
+            resp = self.session.post(
+                f"{BI_BASE}/public-api/data-source/{ds_id}/data",
+                headers=self._headers(),
+                json={"limit": limit, "offset": offset},
+                timeout=self.REQUEST_TIMEOUT,
+            )
+            data = resp.json()
+            if data.get("result") == "ok":
+                return data.get("response", {})
+            last_err = str(data.get("error") or "")
+            if attempt == 0 and self._is_auth_error(resp, data):
+                self.login(force=True)
+                continue
+            break
+        raise Exception(f"获取数据集数据失败: {last_err}")
     
     def get_dataset_columns(self, ds_id: str) -> List[Dict]:
         """获取数据集字段信息"""
-        resp = self.session.post(
-            f"{BI_BASE}/public-api/data-source/{ds_id}/data",
-            headers=self._headers(),
-            json={"limit": 1}
-        )
-        data = resp.json()
-        if data.get("result") == "ok":
-            return data.get("response", {}).get("columns", [])
-        raise Exception(f"获取数据集字段失败: {data.get('error')}")
+        last_err = ""
+        for attempt in range(2):
+            if not self.x_auth_token:
+                self.login()
+            resp = self.session.post(
+                f"{BI_BASE}/public-api/data-source/{ds_id}/data",
+                headers=self._headers(),
+                json={"limit": 1},
+                timeout=self.REQUEST_TIMEOUT,
+            )
+            data = resp.json()
+            if data.get("result") == "ok":
+                return data.get("response", {}).get("columns", [])
+            last_err = str(data.get("error") or "")
+            if attempt == 0 and self._is_auth_error(resp, data):
+                self.login(force=True)
+                continue
+            break
+        raise Exception(f"获取数据集字段失败: {last_err}")
     
     def find_page(self, name_keyword: str) -> Optional[Dict]:
         """根据关键词搜索页面"""
