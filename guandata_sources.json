@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "comment": "按业务逻辑名配置观远 page_id + card_id。card_id 留空则按 card_name_keyword 或类型自动选卡；未列出的字段仍可读 GUANDATA_* 环境变量。",
+  "sources": {
+    "inventory": {
+      "page_id": "x340e4c117103479ebe5d1e5",
+      "card_id": "",
+      "card_name_keyword": "拉新"
+    }
+  }
+}

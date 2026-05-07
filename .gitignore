@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# 本地打包容器
+weather_v2_release_*.tar.gz
+
+# Environment variables
+.env
+
+# Debug/test outputs
+bi_*.json
+bi_*.png
+dashboard_data.json
+recommendations.json
+weather_*.json
+sync_*.jsonl
+sync_checkpoint.json
+
+# Test/debug scripts (not part of core app)
+test_*.py
+check_*.py
+debug_*.py
+analyze_*.py
+find_*.py
+parse_*.py
+
+# Scraping experiments (keep only v3)
+scrape_bi_*.py
+scrape_bi.py

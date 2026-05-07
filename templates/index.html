@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>天气数据分析与智能产品推荐系统 V2</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+        
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .loading-skeleton {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+        }
+        
+        @keyframes loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        
+        .metric-card {
+            transition: all 0.3s ease;
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+        }
+        
+        .progress-bar {
+            transition: width 0.6s ease;
+        }
+        
+        .star-rating {
+            color: #fbbf24;
+        }
+        
+        .recommendation-badge {
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .city-tab {
+            transition: all 0.3s ease;
+        }
+        
+        .city-tab.active {
+            background: white;
+            color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+        
+        .stock-indicator {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .stock-indicator::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+        
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        .category-tag {
+            transition: all 0.2s ease;
+        }
+        
+        .category-tag:hover {
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body class="text-gray-800">
+    <div id="loginOverlay" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4">
+        <div class="glass-card rounded-2xl p-6 w-full max-w-md">
+            <h2 class="text-xl font-bold text-gray-800 mb-1">账号登录</h2>
+            <p class="text-sm text-gray-500 mb-4">管理员进入配置页面，普通用户进入正式页面</p>
+            <form id="loginForm" class="space-y-3">
+                <input id="usernameInput" class="w-full p-3 border rounded-lg border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="用户名（admin / user）" required />
+                <input id="passwordInput" type="password" class="w-full p-3 border rounded-lg border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="密码" required />
+                <button type="submit" class="w-full py-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium">登录</button>
+            </form>
+            <p id="loginStatus" class="mt-3 text-sm text-red-600"></p>
+        </div>
+    </div>
+
+    <!-- Header -->
+    <header class="glass-panel sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-bold text-white">天气数据分析与智能产品推荐系统</h1>
+                        <p class="text-xs text-gray-300">V2.0 生产版 | 实时数据驱动决策</p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <select id="brandSelect" class="px-3 py-2 rounded-lg bg-white/20 text-white border border-white/30 text-sm focus:outline-none">
+                        <option value="all" class="text-gray-800">全部品牌</option>
+                        <option value="marius" class="text-gray-800">Marius</option>
+                        <option value="zihaoselect" class="text-gray-800">ZihaoSelect</option>
+                    </select>
+                    <button id="goFormalBtn" class="hidden px-3 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg text-sm">正式界面</button>
+                    <button id="goConfigBtn" class="hidden px-3 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg text-sm">配置界面</button>
+                    <span id="roleBadge" class="hidden px-3 py-1.5 rounded-full text-xs bg-white/20 text-white"></span>
+                    <span id="updateTime" class="text-sm text-gray-300">更新中...</span>
+                    <button onclick="refreshData()" class="px-4 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg transition-all flex items-center space-x-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                        </svg>
+                        <span>刷新数据</span>
+                    </button>
+                    <button id="logoutBtn" class="hidden px-3 py-2 bg-red-500/70 hover:bg-red-500 text-white rounded-lg text-sm">退出</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main id="formalView" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- City Selector -->
+        <div class="glass-card rounded-2xl p-4 mb-6">
+            <div class="flex flex-wrap gap-2" id="cityTabs">
+                <button class="city-tab active px-6 py-3 rounded-xl font-medium text-gray-600" data-city="北京">
+                    🏛️ 北京
+                </button>
+                <button class="city-tab px-6 py-3 rounded-xl font-medium text-gray-600" data-city="上海">
+                    🏙️ 上海
+                </button>
+                <button class="city-tab px-6 py-3 rounded-xl font-medium text-gray-600" data-city="广州">
+                    🌴 广州
+                </button>
+            </div>
+        </div>
+
+        <!-- Weather Overview -->
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
+            <!-- Current Weather Card -->
+            <div class="glass-card rounded-2xl p-6 metric-card">
+                <div class="flex items-center justify-between mb-4">
+                    <span class="text-gray-500 text-sm">当前城市平均温度</span>
+                    <span id="tempTrend" class="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700">--</span>
+                </div>
+                <div class="flex items-end space-x-2">
+                    <span id="avgTemp" class="text-5xl font-bold text-gray-800">--</span>
+                    <span class="text-2xl text-gray-500 mb-1">°C</span>
+                </div>
+                <p id="weatherDesc" class="text-gray-500 mt-2 text-sm">--</p>
+            </div>
+
+            <!-- Rain Days -->
+            <div class="glass-card rounded-2xl p-6 metric-card">
+                <div class="flex items-center justify-between mb-4">
+                    <span class="text-gray-500 text-sm">16天预报降雨天数</span>
+                    <span class="text-blue-500">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>
+                        </svg>
+                    </span>
+                </div>
+                <div class="flex items-end space-x-2">
+                    <span id="rainDays" class="text-5xl font-bold text-blue-600">--</span>
+                    <span class="text-xl text-gray-500 mb-1">天</span>
+                </div>
+                <p class="text-gray-500 mt-2 text-sm">建议准备雨具类商品</p>
+            </div>
+
+            <!-- Total Stock -->
+            <div class="glass-card rounded-2xl p-6 metric-card">
+                <div class="flex items-center justify-between mb-4">
+                    <span class="text-gray-500 text-sm">推荐品类当前库存</span>
+                    <span class="text-green-500">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
+                        </svg>
+                    </span>
+                </div>
+                <div class="flex items-end space-x-2">
+                    <span id="totalStock" class="text-5xl font-bold text-green-600">--</span>
+                    <span class="text-xl text-gray-500 mb-1">件</span>
+                </div>
+                <p id="recommendedCategoriesStockHint" class="text-gray-700 mt-2 text-xs leading-relaxed line-clamp-4 sm:line-clamp-none">推荐品类：--</p>
+                <p class="text-gray-500 mt-1 text-sm">以上为上述品类的主仓+销退仓现货合计</p>
+            </div>
+
+            <!-- In Transit（推荐品类子集；全店见说明） -->
+            <div class="glass-card rounded-2xl p-6 metric-card">
+                <div class="flex items-center justify-between mb-4">
+                    <span class="text-gray-500 text-sm">在途（推荐品类合计）</span>
+                    <span class="text-yellow-500">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0"></path>
+                        </svg>
+                    </span>
+                </div>
+                <div class="flex items-end space-x-2">
+                    <span id="totalInbound" class="text-5xl font-bold text-yellow-600">--</span>
+                    <span class="text-xl text-gray-500 mb-1">件</span>
+                </div>
+                <p id="inboundScopeDetail" class="text-gray-500 mt-2 text-xs leading-relaxed">--</p>
+            </div>
+        </div>
+
+        <!-- Charts Section -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <!-- Temperature Trend -->
+            <div id="rulesPanel" class="glass-card rounded-2xl p-6 border-2 border-indigo-200 scroll-mt-24">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">📈 16日温度趋势</h3>
+                <div class="h-64">
+                    <canvas id="tempChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Rain Probability -->
+            <div id="rulesPanel" class="glass-card rounded-2xl p-6 border-2 border-indigo-200 scroll-mt-24">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">🌧️ 降水概率</h3>
+                <div class="h-64">
+                    <canvas id="rainChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Smart Recommendations Section -->
+        <div class="space-y-6">
+            <!-- Section Title -->
+            <div class="flex items-center justify-between">
+                <h2 class="text-2xl font-bold text-white">🎯 天气选品推荐</h2>
+                <span id="weatherLabel" class="text-sm text-gray-300">基于均温 + 降水量判断</span>
+            </div>
+
+            <!-- 天气规则说明 -->
+            <div id="weatherRuleDesc" class="glass-panel rounded-xl px-5 py-3 text-sm text-white/80"></div>
+
+            <!-- Area A: Category Recommendations -->
+            <div class="glass-card rounded-2xl p-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                    <span class="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-2">
+                        <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"></path>
+                        </svg>
+                    </span>
+                    推荐品类 · 库存总览
+                </h3>
+                <div id="categoryCards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div class="loading-skeleton h-32 rounded-xl"></div>
+                    <div class="loading-skeleton h-32 rounded-xl"></div>
+                    <div class="loading-skeleton h-32 rounded-xl"></div>
+                </div>
+            </div>
+
+            <!-- Area B: Recommended Products (单品推荐) -->
+            <div class="glass-card rounded-2xl p-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                    <span class="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center mr-2">
+                        <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path>
+                        </svg>
+                    </span>
+                    🛍️ 推荐单品
+                </h3>
+                <div id="productCards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="loading-skeleton h-40 rounded-xl"></div>
+                    <div class="loading-skeleton h-40 rounded-xl"></div>
+                    <div class="loading-skeleton h-40 rounded-xl"></div>
+                    <div class="loading-skeleton h-40 rounded-xl"></div>
+                </div>
+                <div id="productPagination" class="mt-4 flex items-center justify-between text-sm text-gray-600"></div>
+            </div>
+
+            <!-- Area C: Purchase Advice -->
+            <div class="glass-card rounded-2xl p-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                    <span class="w-8 h-8 bg-yellow-100 rounded-lg flex items-center justify-center mr-2">
+                        <svg class="w-5 h-5 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                    </span>
+                    💡 智能采购建议
+                </h3>
+                <div id="purchaseAdvice" class="space-y-3">
+                    <div class="loading-skeleton h-16 rounded-xl"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="mt-12 text-center text-gray-300 text-sm">
+            <p>天气数据分析与智能产品推荐系统 V2.0</p>
+        </footer>
+    </main>
+
+    <section id="configView" class="hidden max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="glass-card rounded-2xl p-6 mb-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-2">⚙️ 配置页面</h2>
+            <p class="text-sm text-gray-500">仅管理员可见，正式页面不展示任何配置信息。</p>
+        </div>
+        <div class="glass-card rounded-2xl p-6 mb-6">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-lg font-semibold text-gray-800">规则面板（可编辑配货逻辑）</h3>
+                <div class="flex items-center space-x-2">
+                    <button onclick="loadRulesConfig()" class="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200">加载</button>
+                    <button onclick="saveRulesConfig()" class="px-3 py-1.5 text-sm bg-green-100 text-green-700 rounded-lg hover:bg-green-200">保存</button>
+                </div>
+            </div>
+            <p class="text-xs text-gray-500 mb-2">直接编辑 JSON 后点击保存，保存后即时生效。</p>
+            <textarea id="rulesEditor" class="w-full h-56 p-3 font-mono text-xs border rounded-lg border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-300" placeholder="点击“加载”查看当前规则配置..."></textarea>
+            <p id="rulesStatus" class="mt-2 text-xs text-gray-500"></p>
+        </div>
+        <div class="glass-card rounded-2xl p-6 border-2 border-emerald-200">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+                <h3 class="text-lg font-semibold text-gray-800">规则可视化（已接入正式推荐逻辑）</h3>
+                <div class="flex flex-wrap items-center gap-2">
+                    <button type="button" onclick="buildRulePrototypePreview()" class="px-3 py-1.5 text-sm bg-emerald-100 text-emerald-700 rounded-lg hover:bg-emerald-200">生成预览</button>
+                    <button type="button" onclick="applyVisualizationToFormal()" class="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">写入正式规则</button>
+                </div>
+            </div>
+            <p class="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mb-3">
+                各温度档与雨天叠加的品类列表支持<strong>多选</strong>：在列表中按住 <kbd class="px-1 bg-white rounded border text-[10px]">Ctrl</kbd>（Windows）或 <kbd class="px-1 bg-white rounded border text-[10px]">⌘</kbd>（Mac）再点选多个品类。
+            </p>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div class="bg-gray-50 rounded-lg p-3 border border-gray-200"><p class="text-sm font-medium text-gray-700 mb-1">高温档（≥28°C）</p><p class="text-[11px] text-gray-500 mb-1">品类可多选 · temp_range: &gt;=28</p><select id="protoTempHot" multiple class="w-full h-28 border border-gray-300 rounded p-2 text-sm"></select></div>
+                <div class="bg-gray-50 rounded-lg p-3 border border-gray-200"><p class="text-sm font-medium text-gray-700 mb-1">温暖档（22~28°C）</p><p class="text-[11px] text-gray-500 mb-1">品类可多选 · 22-28</p><select id="protoTempWarm" multiple class="w-full h-28 border border-gray-300 rounded p-2 text-sm"></select></div>
+                <div class="bg-gray-50 rounded-lg p-3 border border-gray-200"><p class="text-sm font-medium text-gray-700 mb-1">微凉档（15~22°C）</p><p class="text-[11px] text-gray-500 mb-1">品类可多选 · 15-22</p><select id="protoTempCool" multiple class="w-full h-28 border border-gray-300 rounded p-2 text-sm"></select></div>
+                <div class="bg-amber-50 rounded-lg p-3 border border-amber-100"><p class="text-sm font-medium text-gray-800 mb-1">初冬过渡档（10~15°C）</p><p class="text-[11px] text-gray-500 mb-1">轻薄外套与叠穿 · 10-15</p><select id="protoTemp1015" multiple class="w-full h-28 border border-gray-300 rounded p-2 text-sm"></select></div>
+                <div class="bg-amber-50 rounded-lg p-3 border border-amber-100"><p class="text-sm font-medium text-gray-800 mb-1">深秋寒凉档（5~10°C）</p><p class="text-[11px] text-gray-500 mb-1">大衣/羽绒需求上升 · 5-10</p><select id="protoTemp510" multiple class="w-full h-28 border border-gray-300 rounded p-2 text-sm"></select></div>
+                <div class="bg-amber-50 rounded-lg p-3 border border-amber-100"><p class="text-sm font-medium text-gray-800 mb-1">入冬防寒档（0~5°C）</p><p class="text-[11px] text-gray-500 mb-1">厚保暖为主 · 0-5</p><select id="protoTemp05" multiple class="w-full h-28 border border-gray-300 rounded p-2 text-sm"></select></div>
+                <div class="bg-sky-50 rounded-lg p-3 border border-sky-100"><p class="text-sm font-medium text-gray-800 mb-1">零下轻冻档（-5~0°C）</p><p class="text-[11px] text-gray-500 mb-1">防寒防冻 · -5~0</p><select id="protoTempN5to0" multiple class="w-full h-28 border border-gray-300 rounded p-2 text-sm"></select></div>
+                <div class="bg-sky-50 rounded-lg p-3 border border-sky-100"><p class="text-sm font-medium text-gray-800 mb-1">严寒冰冻档（&lt;-5°C，含 &lt;-15°C）</p><p class="text-[11px] text-gray-500 mb-1">极厚保暖 · -15~-5（体感更冷同档）</p><select id="protoTempN15toN5" multiple class="w-full h-28 border border-gray-300 rounded p-2 text-sm"></select></div>
+            </div>
+            <div class="mt-4 bg-gray-50 rounded-lg p-3 border border-gray-200">
+                <p class="text-sm font-medium text-gray-700 mb-1">雨天叠加推荐品类</p>
+                <p class="text-[11px] text-gray-500 mb-1">品类可多选（在全国多雨信号触发时叠加到推荐品类）</p>
+                <select id="protoRainOverlay" multiple class="w-full h-24 border border-gray-300 rounded p-2 text-sm"></select>
+            </div>
+            <p id="protoApplyStatus" class="mt-2 text-xs text-gray-600"></p>
+            <div class="mt-4"><p class="text-sm font-medium text-gray-700 mb-2">预览规则（JSON）</p><textarea id="protoPreview" class="w-full h-44 p-3 font-mono text-xs border rounded-lg border-gray-200 bg-gray-50" readonly></textarea></div>
+        </div>
+    </section>
+
+    <script>
+        // Global State
+        let currentCity = '北京';
+        let currentBrand = 'all';
+        let weatherData = null;
+        let recommendationData = null;
+        let charts = {};
+        let productPage = 1;
+        const productPageSize = 12;
+        let currentUser = null;
+        const BI_CATEGORY_OPTIONS = [
+            'POLO衫', 'T恤', '休闲裤', '半身裙', '卫衣', '大衣', '小香风',
+            '牛仔裤', '皮草', '皮衣', '短外套', '组合套', '羽绒服', '背心/吊带',
+            '衬衫', '西装', '连衣裙', '配饰', '针织衫', '风衣', '马夹/马夹裙'
+        ];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            initCityTabs();
+            initBrandSelect();
+            initRulePrototypeBuilder();
+            initAuthUI();
+            restoreSession();
+        });
+
+        async function restoreSession() {
+            try {
+                const resp = await fetch('/api/auth/me');
+                const result = await resp.json();
+                if (result.success) {
+                    onLoginSuccess(result.data);
+                } else {
+                    showLogin();
+                }
+            } catch (e) {
+                showLogin();
+            }
+        }
+
+        function initAuthUI() {
+            const form = document.getElementById('loginForm');
+            const logoutBtn = document.getElementById('logoutBtn');
+            const goFormalBtn = document.getElementById('goFormalBtn');
+            const goConfigBtn = document.getElementById('goConfigBtn');
+            if (form) form.addEventListener('submit', handleLogin);
+            if (logoutBtn) logoutBtn.addEventListener('click', logout);
+            if (goFormalBtn) goFormalBtn.addEventListener('click', () => switchView('formal'));
+            if (goConfigBtn) goConfigBtn.addEventListener('click', () => switchView('config'));
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById('usernameInput')?.value?.trim() || '';
+            const password = document.getElementById('passwordInput')?.value || '';
+            const loginStatus = document.getElementById('loginStatus');
+            try {
+                if (loginStatus) loginStatus.textContent = '登录中...';
+                const resp = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const result = await resp.json();
+                if (!result.success) throw new Error(result.error || '登录失败');
+                onLoginSuccess(result.data);
+            } catch (err) {
+                if (loginStatus) loginStatus.textContent = err.message || '登录失败';
+            }
+        }
+
+        function onLoginSuccess(user) {
+            currentUser = user;
+            const roleBadge = document.getElementById('roleBadge');
+            const goFormalBtn = document.getElementById('goFormalBtn');
+            const goConfigBtn = document.getElementById('goConfigBtn');
+            const logoutBtn = document.getElementById('logoutBtn');
+            if (roleBadge) {
+                roleBadge.classList.remove('hidden');
+                roleBadge.textContent = `${user.username}（${user.role === 'admin' ? '管理员' : '用户'}）`;
+            }
+            [goFormalBtn, logoutBtn].forEach(el => el && el.classList.remove('hidden'));
+            if (user.role === 'admin') {
+                if (goConfigBtn) goConfigBtn.classList.remove('hidden');
+                switchView('config');
+                loadRulesConfig();
+            } else {
+                if (goConfigBtn) goConfigBtn.classList.add('hidden');
+                switchView('formal');
+            }
+            hideLogin();
+            loadDashboardData();
+        }
+
+        async function logout() {
+            try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (e) {}
+            currentUser = null;
+            switchView('formal');
+            showLogin();
+            const roleBadge = document.getElementById('roleBadge');
+            const goFormalBtn = document.getElementById('goFormalBtn');
+            const goConfigBtn = document.getElementById('goConfigBtn');
+            const logoutBtn = document.getElementById('logoutBtn');
+            [roleBadge, goFormalBtn, goConfigBtn, logoutBtn].forEach(el => el && el.classList.add('hidden'));
+        }
+
+        function switchView(view) {
+            const formal = document.getElementById('formalView');
+            const config = document.getElementById('configView');
+            if (!formal || !config) return;
+            if (view === 'config' && currentUser?.role === 'admin') {
+                formal.classList.add('hidden');
+                config.classList.remove('hidden');
+                return;
+            }
+            config.classList.add('hidden');
+            formal.classList.remove('hidden');
+        }
+
+        function showLogin() {
+            const overlay = document.getElementById('loginOverlay');
+            if (overlay) overlay.classList.remove('hidden');
+        }
+
+        function hideLogin() {
+            const overlay = document.getElementById('loginOverlay');
+            const loginStatus = document.getElementById('loginStatus');
+            if (overlay) overlay.classList.add('hidden');
+            if (loginStatus) loginStatus.textContent = '';
+        }
+
+        function fillMultiSelect(selectId, defaults = []) {
+            const el = document.getElementById(selectId);
+            if (!el) return;
+            el.innerHTML = BI_CATEGORY_OPTIONS.map(cat => {
+                const selected = defaults.includes(cat) ? 'selected' : '';
+                return `<option value="${cat}" ${selected}>${cat}</option>`;
+            }).join('');
+        }
+
+        function getSelectedValues(selectId) {
+            const el = document.getElementById(selectId);
+            if (!el) return [];
+            return Array.from(el.selectedOptions).map(opt => opt.value);
+        }
+
+        const PROTO_TEMP_SELECT_IDS = [
+            'protoTempHot', 'protoTempWarm', 'protoTempCool',
+            'protoTemp1015', 'protoTemp510', 'protoTemp05',
+            'protoTempN5to0', 'protoTempN15toN5',
+            'protoRainOverlay'
+        ];
+
+        function initRulePrototypeBuilder() {
+            fillMultiSelect('protoTempHot', ['T恤', '背心/吊带', '连衣裙', '针织衫']);
+            fillMultiSelect('protoTempWarm', ['T恤', '针织衫', '衬衫', '西装', '连衣裙']);
+            fillMultiSelect('protoTempCool', ['针织衫', '衬衫', '休闲裤', '牛仔裤', '短外套']);
+            fillMultiSelect('protoTemp1015', ['风衣', '大衣', '短外套', '针织衫', '卫衣', '衬衫', '西装', '牛仔裤', '休闲裤', '连衣裙', '半身裙', '马夹/马夹裙', '背心/吊带', '配饰']);
+            fillMultiSelect('protoTemp510', ['大衣', '风衣', '短外套', '羽绒服', '针织衫', '卫衣', '衬衫', '西装', '牛仔裤', '休闲裤', '连衣裙', '半身裙', '马夹/马夹裙', '背心/吊带', '配饰']);
+            fillMultiSelect('protoTemp05', ['羽绒服', '大衣', '风衣', '短外套', '皮衣', '皮草', '针织衫', '卫衣', '衬衫', '西装', '牛仔裤', '休闲裤', '连衣裙', '半身裙', '马夹/马夹裙', '背心/吊带', '配饰', '组合套', '小香风']);
+            fillMultiSelect('protoTempN5to0', ['羽绒服', '大衣', '皮草', '皮衣', '风衣', '短外套', '卫衣', '针织衫', '牛仔裤', '休闲裤', '配饰', '组合套', '马夹/马夹裙', '衬衫', '西装', '小香风']);
+            fillMultiSelect('protoTempN15toN5', ['羽绒服', '大衣', '皮草', '皮衣', '风衣', '短外套', '卫衣', '针织衫', '牛仔裤', '休闲裤', '配饰', '组合套', '马夹/马夹裙', '小香风', '衬衫', '西装']);
+            fillMultiSelect('protoRainOverlay', ['风衣', '短外套', '大衣']);
+            buildRulePrototypePreview();
+            PROTO_TEMP_SELECT_IDS.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.addEventListener('change', buildRulePrototypePreview);
+            });
+        }
+
+        function buildRulePrototypePreview() {
+            const preview = {
+                temperature_rules: [
+                    { temp_range: '>=28', categories: getSelectedValues('protoTempHot') },
+                    { temp_range: '22-28', categories: getSelectedValues('protoTempWarm') },
+                    { temp_range: '15-22', categories: getSelectedValues('protoTempCool') },
+                    { temp_range: '10-15', categories: getSelectedValues('protoTemp1015') },
+                    { temp_range: '5-10', categories: getSelectedValues('protoTemp510') },
+                    { temp_range: '0-5', categories: getSelectedValues('protoTemp05') },
+                    { temp_range: '-5~0', categories: getSelectedValues('protoTempN5to0') },
+                    { temp_range: '-15~-5', categories: getSelectedValues('protoTempN15toN5') }
+                ],
+                rain_overlay_categories: getSelectedValues('protoRainOverlay')
+            };
+            const output = document.getElementById('protoPreview');
+            if (output) output.value = JSON.stringify(preview, null, 2);
+        }
+
+        function tempRangeToSelectId(tr) {
+            const raw = String(tr || '').trim();
+            const s = raw.replace(/\s/g, '').replace(/℃/g, '').replace(/°C/gi, '').replace(/～/g, '~').toLowerCase();
+            if (s.includes('>=28') || raw.includes('高温')) return 'protoTempHot';
+            if (/22[-~]28/.test(s) || raw.includes('温暖')) return 'protoTempWarm';
+            if (/15[-~]22/.test(s) || raw.includes('微凉')) return 'protoTempCool';
+            if (/10[-~]15/.test(s) || raw.includes('初冬过渡')) return 'protoTemp1015';
+            if (/^5[-~]10/.test(s) || (raw.includes('深秋') && raw.includes('寒凉'))) return 'protoTemp510';
+            if (/^0[-~]5(?!\d)/.test(s) || (raw.includes('入冬') && raw.includes('防寒'))) return 'protoTemp05';
+            if (/^-5[-~]0/.test(s) || raw.includes('轻冻')) return 'protoTempN5to0';
+            if (/^-15[-~]-5/.test(s) || raw.includes('严寒冰冻') || /^<-15/.test(s) || raw.includes('极寒')) return 'protoTempN15toN5';
+            if (s.startsWith('<15') || raw.includes('偏冷档')) return 'LEGACY_LT15';
+            return null;
+        }
+
+        function hydratePrototypeFromServerRules(data) {
+            if (!data || typeof data !== 'object') return;
+            const tr = data.temperature_rules;
+            const coldIds = ['protoTemp1015', 'protoTemp510', 'protoTemp05', 'protoTempN5to0', 'protoTempN15toN5'];
+            let legacyCats = null;
+            if (Array.isArray(tr)) {
+                for (const row of tr) {
+                    const rid = tempRangeToSelectId(row.temp_range);
+                    if (rid === 'LEGACY_LT15') {
+                        legacyCats = Array.isArray(row.categories) ? row.categories : [];
+                    }
+                }
+                if (legacyCats && legacyCats.length) {
+                    coldIds.forEach(id => fillMultiSelect(id, legacyCats));
+                }
+                for (const row of tr) {
+                    const rid = tempRangeToSelectId(row.temp_range);
+                    if (rid === 'LEGACY_LT15') continue;
+                    if (!rid) continue;
+                    const cats = Array.isArray(row.categories) ? row.categories : [];
+                    fillMultiSelect(rid, cats);
+                }
+            }
+            if (Array.isArray(data.rain_overlay_categories)) {
+                fillMultiSelect('protoRainOverlay', data.rain_overlay_categories);
+            }
+            buildRulePrototypePreview();
+        }
+
+        async function applyVisualizationToFormal() {
+            const status = document.getElementById('protoApplyStatus');
+            const rulesStatus = document.getElementById('rulesStatus');
+            try {
+                buildRulePrototypePreview();
+                const raw = document.getElementById('protoPreview')?.value || '{}';
+                const proto = JSON.parse(raw);
+                if (!Array.isArray(proto.temperature_rules)) throw new Error('预览 JSON 缺少 temperature_rules');
+                if (status) status.textContent = '正在读取服务器上的完整规则并合并…';
+                const resp = await fetch('/api/rules');
+                const result = await resp.json();
+                if (!result.success) throw new Error(result.error || '读取规则失败');
+                const merged = { ...(result.data || {}) };
+                merged.temperature_rules = proto.temperature_rules;
+                merged.rain_overlay_categories = Array.isArray(proto.rain_overlay_categories)
+                    ? proto.rain_overlay_categories
+                    : [];
+                if (status) status.textContent = '正在保存到 recommendation_rules.json…';
+                const saveResp = await fetch('/api/rules', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(merged)
+                });
+                const saveResult = await saveResp.json();
+                if (!saveResult.success) throw new Error(saveResult.error || '保存失败');
+                const editor = document.getElementById('rulesEditor');
+                if (editor) editor.value = JSON.stringify(saveResult.data, null, 2);
+                if (rulesStatus) rulesStatus.textContent = '已从可视化合并并保存，后端推荐逻辑已按新规则生效';
+                if (status) status.textContent = '写入正式规则成功。';
+                await loadDashboardData();
+            } catch (e) {
+                if (status) status.textContent = '写入失败：' + (e.message || String(e));
+            }
+        }
+
+        async function loadRulesConfig() {
+            const status = document.getElementById('rulesStatus');
+            const editor = document.getElementById('rulesEditor');
+            try {
+                if (status) status.textContent = '加载规则中...';
+                const resp = await fetch('/api/rules');
+                const result = await resp.json();
+                if (!result.success) throw new Error(result.error || '加载失败');
+                if (editor) editor.value = JSON.stringify(result.data, null, 2);
+                hydratePrototypeFromServerRules(result.data);
+                if (status) status.textContent = '规则已加载';
+            } catch (e) {
+                if (status) status.textContent = '加载失败: ' + e.message;
+            }
+        }
+
+        async function saveRulesConfig() {
+            const status = document.getElementById('rulesStatus');
+            const editor = document.getElementById('rulesEditor');
+            try {
+                const content = editor ? editor.value : '{}';
+                const payload = JSON.parse(content);
+                if (status) status.textContent = '保存中...';
+                const resp = await fetch('/api/rules', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await resp.json();
+                if (!result.success) throw new Error(result.error || '保存失败');
+                if (status) status.textContent = '保存成功，已生效';
+                await loadDashboardData();
+            } catch (e) {
+                if (status) status.textContent = '保存失败: ' + e.message;
+            }
+        }
+
+        function initBrandSelect() {
+            const brandSelect = document.getElementById('brandSelect');
+            if (!brandSelect) return;
+            brandSelect.addEventListener('change', function() {
+                currentBrand = this.value || 'all';
+                productPage = 1;
+                loadDashboardData();
+            });
+        }
+
+        // City Tab Handler
+        function initCityTabs() {
+            const tabs = document.querySelectorAll('.city-tab');
+            tabs.forEach(tab => {
+                tab.addEventListener('click', function() {
+                    tabs.forEach(t => t.classList.remove('active'));
+                    this.classList.add('active');
+                    currentCity = this.dataset.city;
+                    productPage = 1;
+                    updateDashboard();
+                });
+            });
+        }
+
+        // Load Dashboard Data
+        async function loadDashboardData() {
+            try {
+                showLoading();
+                
+                const response = await fetch('/api/dashboard?brand=' + encodeURIComponent(currentBrand));
+                const result = await response.json();
+                
+                if (result.success) {
+                    weatherData = result.data.weather;
+                    recommendationData = result.data.recommendations;
+                    productPage = 1;
+                    updateDashboard();
+                    document.getElementById('updateTime').textContent = 
+                        '更新于: ' + new Date(result.update_time).toLocaleString();
+                } else {
+                    showError('加载数据失败: ' + result.error);
+                }
+            } catch (error) {
+                showError('网络错误: ' + error.message);
+            }
+        }
+
+        // Refresh Data
+        async function refreshData() {
+            const btn = document.querySelector('button[onclick="refreshData()"]');
+            btn.disabled = true;
+            btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>刷新中...</span>';
+            
+            await loadDashboardData();
+            
+            btn.disabled = false;
+            btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg><span>刷新数据</span>';
+        }
+
+        // Update Dashboard
+        function updateDashboard() {
+            if (!weatherData || !recommendationData) return;
+            
+            const cityWeather = weatherData.cities.find(c => c.name === currentCity);
+            const cityRec = recommendationData[currentCity];
+            
+            if (!cityWeather || !cityRec) return;
+            
+            // Update Metrics
+            updateMetrics(cityRec);
+            
+            // Update Charts
+            updateCharts(cityWeather);
+            
+            // Update Recommendations
+            updateWeatherRuleDesc(cityRec);
+            updateCategoryCards(cityRec);
+            updateProductCards(cityRec);
+            updatePurchaseAdvice(cityRec);
+        }
+
+        // Update Weather Rule Description
+        function updateWeatherRuleDesc(rec) {
+            const labels = (rec.weather_labels || []).join(' · ');
+            const desc = rec.weather_desc || '';
+            const labelEl = document.getElementById('weatherLabel');
+            const descEl = document.getElementById('weatherRuleDesc');
+            if (labelEl) labelEl.textContent = labels ? `当前模式：${labels}` : '天气选品';
+            if (descEl) descEl.textContent = desc ? `📋 ${desc}` : '';
+        }
+
+        // Update Metrics
+        function updateMetrics(rec) {
+            const summary = rec.weather_summary;
+            
+            document.getElementById('avgTemp').textContent = summary.avg_temp;
+            document.getElementById('tempTrend').textContent = summary.temp_trend_desc;
+            document.getElementById('tempTrend').className = 
+                'text-xs px-2 py-1 rounded-full ' + 
+                (summary.temp_trend === 'rising' ? 'bg-red-100 text-red-700' : 
+                 summary.temp_trend === 'falling' ? 'bg-blue-100 text-blue-700' : 
+                 'bg-green-100 text-green-700');
+            
+            document.getElementById('rainDays').textContent = summary.rain_days;
+            document.getElementById('weatherDesc').textContent = 
+                summary.rain_days > 0 ? '有降雨，注意防雨' : '天气晴好，适合出行';
+            
+            document.getElementById('totalStock').textContent = (rec.total_current_stock || 0).toLocaleString();
+            document.getElementById('totalInbound').textContent = (rec.total_in_transit_stock || 0).toLocaleString();
+
+            const catsHint = document.getElementById('recommendedCategoriesStockHint');
+            if (catsHint) {
+                const cats = rec.recommended_categories || [];
+                catsHint.textContent = cats.length
+                    ? `推荐品类：${cats.join('、')}`
+                    : '推荐品类：暂无';
+            }
+
+            const inboundNote = document.getElementById('inboundScopeDetail');
+            if (inboundNote) {
+                const sub = rec.total_in_transit_stock || 0;
+                const all = rec.all_skus_total_in_transit;
+                const proc = rec.all_skus_sum_procurement_in_transit;
+                const ret = rec.all_skus_sum_sales_return_in_transit;
+                const n = rec.all_skus_row_count;
+                if (typeof all === 'number') {
+                    const line1 = `全款式总在途 ${all.toLocaleString()} 件。`;
+                    let line2 = '';
+                    if (typeof proc === 'number' && typeof ret === 'number' && typeof n === 'number') {
+                        line2 = `按接口明细表逐行相加：采购在途 ∑款 ${proc.toLocaleString()} + 销退在途 ∑款 ${ret.toLocaleString()}（${n.toLocaleString()} 行）。`;
+                    }
+                    const line3 = `上方大数字为推荐品类在途合计 ${sub.toLocaleString()} 件。与观远页面「采购/销退在途」汇总不一致时，多为页面与接口所取卡片不同、或页面含筛选/合计维度不同。`;
+                    inboundNote.innerHTML =
+                        `<span class="block">${line1}</span>` +
+                        (line2 ? `<span class="block mt-1">${line2}</span>` : '') +
+                        `<span class="block mt-1 text-gray-400">${line3}</span>`;
+                } else {
+                    inboundNote.textContent = '';
+                }
+            }
+        }
+
+        // Update Charts
+        function updateCharts(cityData) {
+            const labels = cityData.forecast.map(d => d.date.slice(5));
+            const maxTemps = cityData.forecast.map(d => d.temp_max);
+            const minTemps = cityData.forecast.map(d => d.temp_min);
+            const precip = cityData.forecast.map(d => d.precip);
+
+            // Temperature Chart
+            const tempCtx = document.getElementById('tempChart').getContext('2d');
+            if (charts.temp) charts.temp.destroy();
+            
+            charts.temp = new Chart(tempCtx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '最高温',
+                        data: maxTemps,
+                        borderColor: '#f97316',
+                        backgroundColor: 'rgba(249, 115, 22, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }, {
+                        label: '最低温',
+                        data: minTemps,
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top'
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            ticks: {
+                                callback: function(value) {
+                                    return value + '°C';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Rain Chart
+            const rainCtx = document.getElementById('rainChart').getContext('2d');
+            if (charts.rain) charts.rain.destroy();
+            
+            charts.rain = new Chart(rainCtx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '降水概率(%)',
+                        data: precip,
+                        backgroundColor: precip.map(p => p > 30 ? '#3b82f6' : '#93c5fd'),
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                callback: function(value) {
+                                    return value + '%';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update Category Cards（按品类展示库存汇总）
+        function updateCategoryCards(rec) {
+            const container = document.getElementById('categoryCards');
+            const categories = rec.recommended_categories || [];
+            const summary = rec.category_summary || {};
+
+            if (categories.length === 0) {
+                container.innerHTML = '<p class="text-gray-400 text-center py-8 col-span-3">暂无推荐品类数据</p>';
+                return;
+            }
+
+            container.innerHTML = categories.map((cat, index) => {
+                const data = summary[cat];
+                if (!data) return '';
+
+                const noSkus = !!data.no_skus || ((data.sku_count || 0) === 0 && (data.total_current_stock || 0) === 0);
+                const stockPercent = Math.min(((data.total_current_stock || 0) / 500) * 100, 100);
+                const returnPct = ((data.avg_return_rate || 0) * 100).toFixed(1);
+                const cvrPct = ((data.avg_conversion_rate || 0) * 100).toFixed(1);
+                const estimatedNetSales = (data.estimated_net_sales || data.daily_sales || 0);
+                const salesMissing = !!data.sales_data_missing;
+                const sellableDays = salesMissing ? '数据缺失' : ((data.sellable_days || 0) + ' 天');
+                const returnColor = data.avg_return_rate < 0.3 ? 'text-green-600' :
+                                    data.avg_return_rate < 0.6 ? 'text-yellow-600' : 'text-red-600';
+                const rankColors = ['from-yellow-400 to-orange-500', 'from-gray-400 to-gray-500', 'from-orange-400 to-yellow-600'];
+                const rankColor = index < 3 ? rankColors[index] : 'from-blue-400 to-blue-500';
+
+                return `
+                    <div class="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-5 border border-blue-100 category-tag">
+                        <div class="flex items-start justify-between mb-3">
+                            <div class="flex items-center space-x-2">
+                                <div class="w-7 h-7 bg-gradient-to-br ${rankColor} rounded-lg flex items-center justify-center flex-shrink-0">
+                                    <span class="text-xs font-bold text-white">${index + 1}</span>
+                                </div>
+                                <h4 class="font-semibold text-gray-800">${cat}</h4>
+                            </div>
+                            <span class="recommendation-badge px-2 py-0.5 ${noSkus ? 'bg-gray-400' : 'bg-blue-500'} text-white text-xs rounded-full">${noSkus ? '暂无SKU' : '推荐'}</span>
+                        </div>
+                        <div class="space-y-2">
+                            <div class="flex items-center justify-between text-sm">
+                                <span class="flex items-center text-gray-600">
+                                    <span class="w-2 h-2 bg-green-500 rounded-full mr-1.5"></span>当前库存
+                                </span>
+                                <span class="font-bold text-gray-800">${(data.total_current_stock || 0).toLocaleString()} 件</span>
+                            </div>
+                            <div class="flex items-center justify-between text-sm">
+                                <span class="flex items-center text-gray-600">
+                                    <span class="w-2 h-2 bg-yellow-500 rounded-full mr-1.5"></span>在途库存
+                                </span>
+                                <span class="font-bold text-gray-800">${(data.total_in_transit_stock || 0).toLocaleString()} 件</span>
+                            </div>
+                            <div class="flex items-center justify-between text-xs text-gray-500 mt-1">
+                                <span>退货率 <span class="${returnColor} font-medium">${returnPct}%</span></span>
+                                <span>转化率 <span class="text-blue-600 font-medium">${cvrPct}%</span></span>
+                            </div>
+                            <div class="flex items-center justify-between text-xs text-gray-500">
+                                <span>平均日净销量（款均） <span class="text-indigo-600 font-medium">${salesMissing ? '数据缺失' : (estimatedNetSales.toLocaleString() + ' 件')}</span></span>
+                                <span>可售天数 <span class="text-gray-700 font-medium">${sellableDays}</span></span>
+                            </div>
+                            <div class="mt-2">
+                                <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                    <span>库存充足度</span>
+                                    <span>${Math.round(stockPercent)}%</span>
+                                </div>
+                                <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                    <div class="h-full bg-gradient-to-r from-green-400 to-green-500 progress-bar"
+                                         style="width: ${stockPercent}%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Update Product Cards（推荐单品）
+        function updateProductCards(rec) {
+            const container = document.getElementById('productCards');
+            const pagination = document.getElementById('productPagination');
+            const products = rec.recommended_products || [];
+
+            if (products.length === 0) {
+                container.innerHTML = '<p class="text-gray-400 text-center py-8 col-span-4">暂无推荐单品数据</p>';
+                if (pagination) pagination.innerHTML = '';
+                return;
+            }
+
+            const totalPages = Math.max(1, Math.ceil(products.length / productPageSize));
+            if (productPage > totalPages) productPage = totalPages;
+            const start = (productPage - 1) * productPageSize;
+            const pagedProducts = products.slice(start, start + productPageSize);
+
+            container.innerHTML = pagedProducts.map((product, index) => {
+                const returnPct = ((product.return_rate || 0) * 100).toFixed(1);
+                const cvrPct = ((product.conversion_rate || 0) * 100).toFixed(1);
+                const score = Math.round(product.recommendation_score || 0);
+                const returnColor = product.return_rate < 0.3 ? 'text-green-600' :
+                                    product.return_rate < 0.6 ? 'text-yellow-600' : 'text-red-600';
+                
+                // 推荐指数颜色
+                let scoreColor = 'bg-gray-400';
+                if (score >= 80) scoreColor = 'bg-green-500';
+                else if (score >= 60) scoreColor = 'bg-blue-500';
+                else if (score >= 40) scoreColor = 'bg-yellow-500';
+                else scoreColor = 'bg-orange-500';
+
+                // 显示名称：优先产品名称，其次小名，最后款号
+                const displayName = product.product_name || product.name || product.sku_id;
+                const nickName = product.name && product.name !== product.sku_id ? product.name : '';
+
+                const imageUrl = product.image_url || '';
+                const imageHtml = imageUrl
+                    ? `<img src="${imageUrl}" alt="${displayName}" class="w-full h-40 object-cover rounded-lg border border-gray-100 mb-3" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`
+                    : '';
+                const fallbackImageHtml = `<div class="w-full h-40 rounded-lg border border-gray-100 mb-3 bg-gray-50 text-gray-400 text-xs items-center justify-center ${imageUrl ? 'hidden' : 'flex'}">暂无图片</div>`;
+
+                return `
+                    <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                        ${imageHtml}
+                        ${fallbackImageHtml}
+                        <div class="flex items-start justify-between mb-2">
+                            <div class="flex-1 min-w-0">
+                                <span class="inline-block px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded mb-1">${product.category}</span>
+                                <h4 class="font-semibold text-gray-800 text-sm truncate" title="${displayName}">${displayName}</h4>
+                                ${nickName ? `<p class="text-xs text-gray-400 truncate">小名: ${nickName}</p>` : ''}
+                            </div>
+                            <div class="ml-2 flex-shrink-0">
+                                <div class="w-10 h-10 ${scoreColor} rounded-full flex items-center justify-center">
+                                    <span class="text-xs font-bold text-white">${score}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="space-y-1.5 text-xs">
+                            <div class="flex items-center justify-between">
+                                <span class="text-gray-500">款号</span>
+                                <span class="font-mono text-gray-700">${product.sku_id}</span>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <span class="text-gray-500">可售库存</span>
+                                <span class="font-medium text-green-600">${(product.available_stock || product.stock || 0).toLocaleString()} 件</span>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <span class="text-gray-500">采购在途</span>
+                                <span class="font-medium text-yellow-600">${(product.inbound || 0).toLocaleString()} 件</span>
+                            </div>
+                            <div class="flex items-center justify-between pt-1 border-t border-gray-100 mt-2">
+                                <span class="text-gray-400">退货率 <span class="${returnColor}">${returnPct}%</span></span>
+                                <span class="text-gray-400">转化率 <span class="text-blue-600">${cvrPct}%</span></span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            if (pagination) {
+                pagination.innerHTML = `
+                    <div>共 ${products.length} 款，第 ${productPage}/${totalPages} 页</div>
+                    <div class="space-x-2">
+                        <button onclick="changeProductPage(-1)" ${productPage <= 1 ? 'disabled' : ''} class="px-3 py-1 rounded border ${productPage <= 1 ? 'text-gray-300 border-gray-200' : 'text-gray-700 border-gray-300 hover:bg-gray-50'}">上一页</button>
+                        <button onclick="changeProductPage(1)" ${productPage >= totalPages ? 'disabled' : ''} class="px-3 py-1 rounded border ${productPage >= totalPages ? 'text-gray-300 border-gray-200' : 'text-gray-700 border-gray-300 hover:bg-gray-50'}">下一页</button>
+                    </div>
+                `;
+            }
+        }
+
+        function changeProductPage(delta) {
+            productPage += delta;
+            if (productPage < 1) productPage = 1;
+            updateDashboard();
+        }
+
+        // Update Purchase Advice
+        function updatePurchaseAdvice(rec) {
+            const container = document.getElementById('purchaseAdvice');
+            const advice = rec.purchase_advice;
+            
+            if (!advice || advice.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-center py-4">暂无采购建议</p>';
+                return;
+            }
+            
+            container.innerHTML = advice.map(item => {
+                const colorMap = {
+                    urgent: 'bg-red-50 border-red-200',
+                    warning: 'bg-yellow-50 border-yellow-200',
+                    normal: 'bg-green-50 border-green-200',
+                    overstock: 'bg-blue-50 border-blue-200'
+                };
+                const cardColor = colorMap[item.urgency] || colorMap.normal;
+                const transfer = (item.transfer_to || []).length
+                    ? `<p class="text-xs text-indigo-700 mt-1">资金转投: ${(item.transfer_to || []).join('、')}</p>`
+                    : '';
+                const inboundPct = Math.round((item.inbound_ratio || 0) * 100);
+                const missing = !!item.sales_data_missing;
+
+                return `
+                    <div class="${cardColor} border rounded-xl p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <h4 class="font-semibold text-gray-800">${item.category}</h4>
+                            <span class="px-2 py-0.5 text-xs rounded-full bg-white/80 text-gray-700">${item.urgency_text}</span>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 mb-3 text-center">
+                            <div class="bg-white rounded-lg p-2 border border-gray-100">
+                                <p class="text-[11px] text-gray-500">库存</p>
+                                <p class="text-sm font-semibold text-gray-800">${(item.current_stock || 0).toLocaleString()}</p>
+                            </div>
+                            <div class="bg-white rounded-lg p-2 border border-gray-100">
+                                <p class="text-[11px] text-gray-500">在途</p>
+                                <p class="text-sm font-semibold text-gray-800">${(item.inbound_quantity || 0).toLocaleString()}</p>
+                            </div>
+                            <div class="bg-white rounded-lg p-2 border border-gray-100">
+                                <p class="text-[11px] text-gray-500">可售天数</p>
+                                <p class="text-sm font-semibold text-gray-800">${missing ? '数据缺失' : ((item.sellable_days || 0) + '天')}</p>
+                            </div>
+                        </div>
+                        <p class="text-xs text-gray-600 mb-1">平均日净销量（款均） ${missing ? '数据缺失' : ((item.estimated_net_sales || item.daily_sales || 0).toLocaleString() + ' 件')} · 在途占比 ${inboundPct}%</p>
+                        <p class="text-xs text-blue-700 mb-2">未来天气关联: ${item.weather_note || '天气影响中性'}</p>
+                        <p class="text-sm text-gray-700">⚠️ 建议: ${item.action || '维持常规补货节奏'}</p>
+                        ${transfer}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Show Loading State
+        function showLoading() {
+            // Metrics
+            document.getElementById('avgTemp').textContent = '--';
+            document.getElementById('rainDays').textContent = '--';
+            document.getElementById('totalStock').textContent = '--';
+            document.getElementById('totalInbound').textContent = '--';
+            const rc = document.getElementById('recommendedCategoriesStockHint');
+            if (rc) rc.textContent = '推荐品类：--';
+        }
+
+        // Show Error
+        function showError(message) {
+            alert(message);
+        }
+    </script>
+</body>
+</html>

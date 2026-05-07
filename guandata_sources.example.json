@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "sources": {
+    "inventory": {
+      "page_id": "你的页面pgId",
+      "card_id": "",
+      "card_name_keyword": "拉新"
+    },
+    "sales_daily": {
+      "page_id": "另一页面pgId",
+      "card_id": "指定卡片cdId",
+      "card_name_keyword": ""
+    }
+  }
+}
