@@ -11,6 +11,7 @@ BI 库存数据服务模块 V3
 import sys
 import os
 import json
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
@@ -19,6 +20,56 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guandata import create_bi, GuanBI
 from data_source_config import get_source_config
 from style_code import pick_style_code_from_dim_titles
+
+
+def _prefer_sharper_image_url(url: str) -> str:
+    """
+    淘宝/阿里 CDN 常带 _WxH 缩略后缀，卡片格子里多为小图，放大后模糊。
+    若检测到较小尺寸片段，尝试换成更大像素段（仅替换第一段匹配）。
+    """
+    if not url or not url.startswith("http"):
+        return url
+    m = re.search(r"_(\d+)x(\d+)", url)
+    if not m:
+        return url
+    w, h = int(m.group(1)), int(m.group(2))
+    if w >= 600 and h >= 600:
+        return url
+    return re.sub(r"_(\d+)x(\d+)", "_800x800", url, count=1)
+
+
+def _image_url_from_dim(dim: Any) -> str:
+    """观远维度单元格：图片 URL 常在 picUrl/url 等字段，仅读 title 会丢链或只剩说明文字。"""
+    if not isinstance(dim, dict):
+        return ""
+    for key in (
+        "picUrl",
+        "pic_url",
+        "imageUrl",
+        "image_url",
+        "url",
+        "src",
+        "link",
+        "href",
+        "avatar",
+        "cover",
+    ):
+        v = dim.get(key)
+        if isinstance(v, str) and v.strip().startswith(("http://", "https://")):
+            return _prefer_sharper_image_url(v.strip())
+    v = dim.get("value")
+    if isinstance(v, str) and v.strip().startswith(("http://", "https://")):
+        return _prefer_sharper_image_url(v.strip())
+    for nested_key in ("data", "extra", "ext", "attrs", "attribute"):
+        nested = dim.get(nested_key)
+        if isinstance(nested, dict):
+            inner = _image_url_from_dim(nested)
+            if inner:
+                return inner
+    t = dim.get("title")
+    if isinstance(t, str) and t.strip().startswith(("http://", "https://")):
+        return _prefer_sharper_image_url(t.strip())
+    return ""
 
 
 class BIInventoryServiceV3:
@@ -228,6 +279,7 @@ class BIInventoryServiceV3:
 
         parsed_rows: List[Dict[str, Any]] = []
         skipped_short = 0
+        _price_dim_idx = int(os.getenv("GUANDATA_DIM_PRICE_POSITION_INDEX", "8"))
         for idx, dims in enumerate(row_values):
             metrics = data_rows[idx]
             if len(dims) < 7 or len(metrics) < 14:
@@ -258,14 +310,25 @@ class BIInventoryServiceV3:
                 return_rate_percent = return_rate_raw * 100 if return_rate_raw <= 1 else return_rate_raw
                 conversion_percent = conversion_rate_raw * 100 if conversion_rate_raw <= 1 else conversion_rate_raw
 
+                img_cell = dims[4] if len(dims) > 4 else {}
+                img_url = _image_url_from_dim(img_cell) or str(
+                    img_cell.get("title", "") if isinstance(img_cell, dict) else ""
+                ).strip()
+                price_position = ""
+                if len(dims) > _price_dim_idx:
+                    price_position = str(
+                        dims[_price_dim_idx].get("title", "") or ""
+                    ).strip()
+
                 parsed_rows.append({
                     "商品ID": product_id,
                     "款式编码": style_code or product_id,
                     "小名": short_name,
-                    "图片(到款式)": str(dims[4].get("title", "")).strip(),
+                    "图片(到款式)": img_url,
                     "产品名称": product_name,
                     "产品分类": category or "其他",
                     "款虚拟分类": str(dims[7].get("title", "")).strip() if len(dims) > 7 else "",
+                    "价格定位": price_position,
                     "款销退仓库存": sales_return_stock,
                     "款主仓实际库存": stock,
                     "款销退在途数": sales_return_inbound,
@@ -346,6 +409,7 @@ class BIInventoryServiceV3:
                     'name': row.get('小名', ''),
                     'product_name': row.get('产品名称', ''),
                     'style_tag': row.get('款虚拟分类', ''),
+                    'price_position': str(row.get('价格定位', '') or '').strip(),
                     'image_url': row.get('图片(到款式)', ''),
                     'category': row.get('产品分类', '其他'),
                     'stock': main_stock,

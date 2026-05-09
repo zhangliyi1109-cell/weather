@@ -234,6 +234,91 @@ class BIDataService:
         """返回可讨论/可配置的天气推荐框架"""
         return self._rules_config.get("weather_recommendation_framework", {})
 
+    def _get_product_role_thresholds(self) -> Dict[str, Any]:
+        """
+        单品角色门槛：引流款 / 利润款 / 库存款。
+        配置见 recommendation_rules.json → product_role_thresholds（配置页可改）。
+        """
+        base: Dict[str, Any] = {
+            "profit_retail_to_cost_ratio_min": 2.8,
+            "traffic_min_net_sales_qty": 1000,
+            "traffic_min_main_warehouse_stock": 200,
+            "traffic_min_conversion_rate": 0.05,
+            "traffic_price_positions": ["低"],
+            "inventory_min_main_warehouse_stock": 200,
+            "inventory_require_zero_procurement_inbound": True,
+            "roles_min_available_stock": 0,
+        }
+        raw = self._rules_config.get("product_role_thresholds")
+        if not isinstance(raw, dict):
+            out = dict(base)
+            out["traffic_price_positions"] = list(base["traffic_price_positions"])
+            return self._finalize_product_role_thresholds(out)
+        out = dict(base)
+        out["traffic_price_positions"] = list(base["traffic_price_positions"])
+        for key, default in base.items():
+            if key not in raw:
+                continue
+            v = raw[key]
+            if key == "inventory_require_zero_procurement_inbound":
+                if isinstance(v, bool):
+                    out[key] = v
+                else:
+                    out[key] = str(v).strip().lower() in ("1", "true", "yes", "on")
+                continue
+            if key == "traffic_price_positions":
+                if isinstance(v, list):
+                    out[key] = [str(x).strip() for x in v if str(x).strip()]
+                elif isinstance(v, str):
+                    out[key] = [
+                        x.strip()
+                        for x in v.replace("，", ",").split(",")
+                        if x.strip()
+                    ]
+                continue
+            if isinstance(default, bool):
+                continue
+            if isinstance(default, int):
+                try:
+                    out[key] = int(float(v))
+                except (TypeError, ValueError):
+                    pass
+                continue
+            if isinstance(default, float):
+                try:
+                    out[key] = float(v)
+                except (TypeError, ValueError):
+                    pass
+        return self._finalize_product_role_thresholds(out)
+
+    def _finalize_product_role_thresholds(self, out: Dict[str, Any]) -> Dict[str, Any]:
+        """转化率阈值存 0~1；若配置写成百分数字如 5 则视为 5%。"""
+        tc = float(out.get("traffic_min_conversion_rate", 0.05) or 0.0)
+        if tc > 1.0:
+            tc = tc / 100.0
+        out["traffic_min_conversion_rate"] = float(min(max(tc, 0.0), 1.0))
+        pos = out.get("traffic_price_positions")
+        if not isinstance(pos, list):
+            out["traffic_price_positions"] = []
+        return out
+
+    def _traffic_matches_price_position(
+        self, product: Dict[str, Any], allowed: List[str]
+    ) -> bool:
+        """引流款价格定位：allowed 为空则不限制；否则 BI 字段需包含任一配置片段（如「低」）。"""
+        if not allowed:
+            return True
+        pp = str(product.get("price_position") or "").strip()
+        if not pp:
+            return False
+        for token in allowed:
+            t = str(token).strip()
+            if not t:
+                continue
+            if t in pp or pp in t:
+                return True
+        return False
+
     def get_rules_config(self) -> Dict[str, Any]:
         """返回完整规则配置"""
         return self._rules_config
@@ -403,14 +488,18 @@ class BIDataService:
         for category, data in categories_data.items():
             for item in data["items"]:
                 # 生成随机业务数据
-                stock = random.randint(50, 2000)  # 现货库存
+                stock = random.randint(220, 2600)  # 现货库存（便于满足引流主仓门槛演示）
                 inbound = random.randint(0, 800)  # 采购在途
                 order_occupied = random.randint(0, min(150, stock))
                 size_completeness = round(random.uniform(0.6, 1.0), 2)  # 尺码齐全度
                 return_rate = round(random.uniform(0.05, 0.25), 2)  # 退货率 5%-25%
-                conversion_rate = round(random.uniform(0.02, 0.15), 3)  # 转化率 2%-15%
-                sales_qty = random.randint(80, 2500)
-                net_sales_qty = max(3, int(round(sales_qty * (1 - min(return_rate, 0.95)))))
+                conversion_rate = round(random.uniform(0.05, 0.18), 3)  # 支付转化率（与引流下限对齐）
+                sales_qty = random.randint(1200, 4500)
+                net_sales_qty = max(
+                    1001,
+                    int(round(sales_qty * (1 - min(return_rate, 0.95)))),
+                )
+                price_position = random.choice(["低", "中", "高"])
                 avail = max(0, stock + inbound - order_occupied)
                 
                 products.append({
@@ -431,6 +520,7 @@ class BIDataService:
                     "size_completeness": size_completeness,
                     "return_rate": return_rate,
                     "conversion_rate": conversion_rate,
+                    "price_position": price_position,
                     "update_time": datetime.now().isoformat()
                 })
         
@@ -482,6 +572,7 @@ class BIDataService:
                             "product_name": product_name,
                             "style_tag": item.get('style_tag', ''),
                             "brand": self._infer_brand(item),
+                            "price_position": str(item.get("price_position", "") or "").strip(),
                             "image_url": item.get('image_url', ''),
                             "price": item.get('price', 299),
                             "stock": item.get('stock', 0),
@@ -962,8 +1053,16 @@ class BIDataService:
         return product.get("category") in {"T恤", "背心/吊带", "衬衫", "连衣裙"}
 
     def _is_eligible_stock_product(self, product: Dict[str, Any]) -> bool:
-        """仅用于推荐单品门槛：主仓库存>200（采购在途不限）"""
-        return product.get("stock", 0) > 200
+        """库存款：无采购在途（可配置）且主仓在库 > 阈值（默认 200）。"""
+        th = self._get_product_role_thresholds()
+        stock = int(product.get("stock", 0) or 0)
+        inv_min = int(th.get("inventory_min_main_warehouse_stock", 200) or 0)
+        if stock <= inv_min:
+            return False
+        if th.get("inventory_require_zero_procurement_inbound", True):
+            if int(product.get("inbound", 0) or 0) != 0:
+                return False
+        return True
 
     def _estimate_daily_sales(self, product: Dict[str, Any]) -> int:
         """
@@ -1291,11 +1390,14 @@ class BIDataService:
                 "brand": normalized_brand,
                 "category_scope": "all products in recommended categories",
                 "single_product_roles": (
-                    "引流款/利润款：可售库存（含主仓+销退仓+采购在途+销退在途-云仓-订单占有）达阈值；"
-                    "利润款另需 sku_unit_cost.json 成本与有效售价。"
-                    "库存款：主仓 stock>200，按原库存推荐指数排序。"
+                    "引流款：款净销量与主仓在库满足 product_role_thresholds；"
+                    "利润款：有效售价/成本 > 配置倍率且需 sku_unit_cost.json 或 BI 标价；"
+                    "库存款：无采购在途且主仓在库 > 阈值。"
                 ),
-                "single_product_stock_filter": "库存款主仓>200；引流/利润看 available_stock",
+                "single_product_stock_filter": (
+                    "阈值来自 recommendation_rules.json → product_role_thresholds（配置页可编辑）"
+                ),
+                "product_role_thresholds": self._get_product_role_thresholds(),
                 "recommendation_category_scope": (
                     f"体感≥{self.OUTERWEAR_STRIP_MIN_ADJ_TEMP}°C 时不推荐大衣/短外套/风衣；"
                     f"体感≥{self.SUPPLEMENTAL_OVERLAY_MERGE_BELOW_ADJ_TEMP}°C 时不并入全国多雨/高湿/大风。"
@@ -1337,6 +1439,7 @@ class BIDataService:
             "image_url": product.get("image_url", ""),
             "return_rate": product.get("return_rate", 0),
             "conversion_rate": product.get("conversion_rate", 0),
+            "price_position": product.get("price_position", ""),
             "recommendation_score": role_score,
             "recommend_tag": recommend_tag,
             "recommend_tag_key": recommend_tag_key,
@@ -1364,8 +1467,15 @@ class BIDataService:
         - 库存款：主仓充足清库存（沿用原库存指数）
         同一 sku 优先归入引流 > 利润 > 库存。
         """
-        min_avail = int(os.getenv("RECOMMEND_MIN_AVAILABLE", "30"))
-        traffic_min_net = int(os.getenv("RECOMMEND_TRAFFIC_MIN_NET_SALES", "3"))
+        th = self._get_product_role_thresholds()
+        min_avail = int(th.get("roles_min_available_stock", 0) or 0)
+        traffic_net_min = int(th.get("traffic_min_net_sales_qty", 1000) or 0)
+        traffic_stock_min = int(th.get("traffic_min_main_warehouse_stock", 200) or 0)
+        traffic_cvr_min = float(th.get("traffic_min_conversion_rate", 0.05) or 0.0)
+        allowed_pp = th.get("traffic_price_positions") or []
+        if not isinstance(allowed_pp, list):
+            allowed_pp = []
+        profit_ratio_min = float(th.get("profit_retail_to_cost_ratio_min", 2.8) or 2.8)
 
         traffic_rows: List[Dict[str, Any]] = []
         profit_rows: List[Dict[str, Any]] = []
@@ -1378,20 +1488,29 @@ class BIDataService:
                 continue
 
             def _traffic_eligible(p: Dict[str, Any]) -> bool:
-                a = int(p.get("available_stock", p.get("stock", 0)) or 0)
-                if a < min_avail:
+                if min_avail > 0:
+                    a = int(p.get("available_stock", p.get("stock", 0)) or 0)
+                    if a < min_avail:
+                        return False
+                cvr = float(p.get("conversion_rate", 0) or 0)
+                if cvr < traffic_cvr_min:
+                    return False
+                if not self._traffic_matches_price_position(p, allowed_pp):
                     return False
                 net = int(p.get("net_sales_qty", 0) or 0)
-                sq = int(p.get("sales_qty", 0) or 0)
-                return net >= traffic_min_net or sq >= traffic_min_net * 3
+                stock = int(p.get("stock", 0) or 0)
+                return net > traffic_net_min and stock > traffic_stock_min
 
             def _profit_eligible(p: Dict[str, Any]) -> bool:
-                a = int(p.get("available_stock", p.get("stock", 0)) or 0)
-                if a < min_avail:
-                    return False
+                if min_avail > 0:
+                    a = int(p.get("available_stock", p.get("stock", 0)) or 0)
+                    if a < min_avail:
+                        return False
                 cost = self._get_unit_cost(p)
                 price = self._get_effective_retail_price(p)
-                return cost is not None and price > 0 and price > cost
+                if cost is None or float(cost) <= 0 or price <= 0 or price <= float(cost):
+                    return False
+                return (price / float(cost)) > profit_ratio_min
 
             t_pool = [p for p in cat_ps if _traffic_eligible(p)]
             t_pool.sort(key=lambda x: self.calculate_traffic_score(x), reverse=True)

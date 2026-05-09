@@ -14,6 +14,18 @@
     },
     "default_brand": "marius"
   },
+  "product_role_thresholds": {
+    "profit_retail_to_cost_ratio_min": 2.8,
+    "traffic_min_net_sales_qty": 1000,
+    "traffic_min_main_warehouse_stock": 200,
+    "traffic_min_conversion_rate": 0.05,
+    "traffic_price_positions": [
+      "低"
+    ],
+    "inventory_min_main_warehouse_stock": 200,
+    "roles_min_available_stock": 0,
+    "inventory_require_zero_procurement_inbound": true
+  },
   "rain_overlay_categories": [
     "大衣",
     "短外套",
