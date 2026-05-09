@@ -100,6 +100,8 @@ class BIDataService:
         self._bi_service = None
         self._products_cache = None
         self._rules_config = self._load_rules_config()
+        # 款式 -> { unit_cost, retail_price? }，来自 sku_unit_cost.json（利润款）
+        self._sku_economics_map: Optional[Dict[str, Dict[str, Any]]] = None
 
     def _load_rules_config(self) -> Dict[str, Any]:
         """加载推荐规则与品牌映射配置"""
@@ -130,7 +132,67 @@ class BIDataService:
         except Exception as e:
             print(f"⚠️ 规则配置加载失败，使用默认配置: {e}")
             return default_config
-    
+
+    def _sku_economics_file_path(self) -> str:
+        raw = (os.getenv("SKU_UNIT_COST_FILE") or "sku_unit_cost.json").strip() or "sku_unit_cost.json"
+        base = os.path.dirname(os.path.abspath(__file__))
+        return raw if os.path.isabs(raw) else os.path.join(base, raw)
+
+    def reload_sku_economics(self) -> None:
+        """热更新单品成本/售价映射（下次读取文件）。"""
+        self._sku_economics_map = None
+
+    def _load_sku_economics_map(self) -> Dict[str, Dict[str, Any]]:
+        if self._sku_economics_map is not None:
+            return self._sku_economics_map
+        path = self._sku_economics_file_path()
+        out: Dict[str, Dict[str, Any]] = {}
+        if not os.path.isfile(path):
+            self._sku_economics_map = out
+            return out
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception as e:
+            print(f"⚠️ 单品成本文件读取失败 ({path}): {e}")
+            self._sku_economics_map = out
+            return out
+        if not isinstance(raw, dict):
+            self._sku_economics_map = out
+            return out
+        for k, v in raw.items():
+            ks = str(k).strip()
+            if not ks or ks.startswith("_"):
+                continue
+            if isinstance(v, (int, float)):
+                out[ks] = {"unit_cost": float(v), "retail_price": None}
+            elif isinstance(v, dict):
+                c = v.get("unit_cost", v.get("cost"))
+                if c is None:
+                    continue
+                rp = v.get("retail_price", v.get("price"))
+                out[ks] = {
+                    "unit_cost": float(c),
+                    "retail_price": float(rp) if rp is not None else None,
+                }
+        self._sku_economics_map = out
+        return out
+
+    def _get_unit_cost(self, product: Dict[str, Any]) -> Optional[float]:
+        sku = str(product.get("sku_id", "")).strip()
+        row = self._load_sku_economics_map().get(sku)
+        if not row:
+            return None
+        return float(row["unit_cost"])
+
+    def _get_effective_retail_price(self, product: Dict[str, Any]) -> float:
+        """售价：优先成本文件中的 retail_price，否则 BI 商品 price。"""
+        sku = str(product.get("sku_id", "")).strip()
+        row = self._load_sku_economics_map().get(sku)
+        if row and row.get("retail_price") is not None:
+            return float(row["retail_price"])
+        return float(product.get("price") or 0)
+
     def clear_cache(self):
         """清除缓存"""
         self._products_cache = None
@@ -343,17 +405,29 @@ class BIDataService:
                 # 生成随机业务数据
                 stock = random.randint(50, 2000)  # 现货库存
                 inbound = random.randint(0, 800)  # 采购在途
+                order_occupied = random.randint(0, min(150, stock))
                 size_completeness = round(random.uniform(0.6, 1.0), 2)  # 尺码齐全度
                 return_rate = round(random.uniform(0.05, 0.25), 2)  # 退货率 5%-25%
                 conversion_rate = round(random.uniform(0.02, 0.15), 3)  # 转化率 2%-15%
+                sales_qty = random.randint(80, 2500)
+                net_sales_qty = max(3, int(round(sales_qty * (1 - min(return_rate, 0.95)))))
+                avail = max(0, stock + inbound - order_occupied)
                 
                 products.append({
                     "sku_id": item["sku_id"],
                     "category": category,
                     "name": item["name"],
+                    "product_name": item["name"],
                     "price": item["base_price"],
                     "stock": stock,
                     "inbound": inbound,
+                    "sales_return_stock": 0,
+                    "sales_return_inbound": 0,
+                    "virtual_cloud_stock": 0,
+                    "order_occupied": order_occupied,
+                    "available_stock": avail,
+                    "sales_qty": sales_qty,
+                    "net_sales_qty": net_sales_qty,
                     "size_completeness": size_completeness,
                     "return_rate": return_rate,
                     "conversion_rate": conversion_rate,
@@ -417,6 +491,8 @@ class BIDataService:
                             "virtual_cloud_stock": item.get('virtual_cloud_stock', 0),
                             "order_occupied": item.get('order_occupied', 0),
                             "available_stock": item.get('available_stock', item.get('stock', 0)),
+                            "sales_qty": int(item.get("sales_qty", 0) or 0),
+                            "net_sales_qty": int(item.get("net_sales_qty", 0) or 0),
                             "size_completeness": item.get('size_completeness', 0.85),
                             "return_rate": item.get('return_rate', 0.15),
                             "conversion_rate": item.get('conversion_rate', 0.05),
@@ -828,26 +904,50 @@ class BIDataService:
     
     def calculate_recommendation_score(self, product: Dict[str, Any]) -> float:
         """
-        计算商品推荐指数
-        评分公式：
-        - 在仓库存权重 80%（业务优先：清库存）
-        - 转化率权重 20%（业务优先：提升转化）
+        库存款推荐指数：主仓库存 + 转化（清库存导向；不含在途）。
         """
-        # 只使用主仓在仓库存，不使用在途
         warehouse_stock = product.get("stock", 0)
 
-        # 在仓库存归一化 * 80
-        # 使用对数压缩，避免库存差距过大导致分数两极分化
         import math
         stock_normalized = min(math.log10(warehouse_stock + 10) / math.log10(5010), 1.0)
         stock_score = stock_normalized * 80
 
-        # 转化率归一化 * 20
         cvr_score = min(product["conversion_rate"] / 0.15, 1.0) * 20
 
-        total_score = stock_score + cvr_score
+        return round(stock_score + cvr_score, 2)
 
-        return round(total_score, 2)
+    def calculate_traffic_score(self, product: Dict[str, Any]) -> float:
+        """引流款：高净销量/销量 + 高转化，退货率惩罚。"""
+        import math
+
+        net_sales = int(product.get("net_sales_qty", 0) or 0)
+        sales_qty = int(product.get("sales_qty", 0) or 0)
+        cvr = float(product.get("conversion_rate", 0) or 0)
+        ret = float(product.get("return_rate", 0) or 0)
+        safe_ret = min(max(ret, 0.0), 0.95)
+        implied_net = int(round(sales_qty * (1 - safe_ret))) if sales_qty else 0
+        vol = max(net_sales, implied_net)
+        vol_norm = min(math.log10(vol + 10) / math.log10(10010), 1.0) * 45
+        cvr_norm = min(cvr / 0.12, 1.0) * 45
+        sales_signal = min(math.log10(sales_qty + 10) / math.log10(50010), 1.0) * 10
+        penalty = min(ret, 0.9) * 15
+        return round(max(0.0, min(100.0, vol_norm + cvr_norm + sales_signal - penalty)), 2)
+
+    def calculate_profit_score(self, product: Dict[str, Any]) -> float:
+        """利润款：毛利率为主，辅以净销量与转化（需成本文件 + 有效售价）。"""
+        import math
+
+        cost = self._get_unit_cost(product)
+        price = self._get_effective_retail_price(product)
+        if cost is None or price <= 0 or price <= cost:
+            return 0.0
+        margin = (price - cost) / price
+        net_sales = int(product.get("net_sales_qty", 0) or 0)
+        cvr = float(product.get("conversion_rate", 0) or 0)
+        margin_pts = margin * 55
+        vol_pts = min(math.log10(net_sales + 10) / math.log10(50010), 1.0) * 30
+        cvr_pts = min(cvr / 0.12, 1.0) * 15
+        return round(max(0.0, min(100.0, margin_pts + vol_pts + cvr_pts)), 2)
 
     def _is_quick_dry_candidate(self, product: Dict[str, Any]) -> bool:
         """
@@ -1042,15 +1142,6 @@ class BIDataService:
         )
         all_skus_total_in_transit = all_skus_sum_procurement_in_transit + all_skus_sum_sales_return_in_transit
         all_skus_row_count = len(all_products)
-        # 推荐单品才使用在库门槛
-        eligible_products = [p for p in all_products if self._is_eligible_stock_product(p)]
-        # 高湿时，仅在单品推荐层过滤掉非速干候选中的重针织
-        if avg_humidity >= self.HIGH_HUMIDITY_THRESHOLD:
-            eligible_products = [
-                p for p in eligible_products
-                if p.get("category") != "针织衫" or self._is_quick_dry_candidate(p)
-            ]
-
         # 如果没有匹配到任何BI品类，回退到全部品类（字母序，便于稳定展示）
         if not bi_categories:
             bi_categories = sorted(
@@ -1133,10 +1224,28 @@ class BIDataService:
             purchase_advice_allowlist=temp_primary_for_purchase_advice,
         )
 
-        # 获取推荐单品（从推荐品类中选取库存充足的单品）
-        recommended_products = self._get_recommended_products(
-            sorted_categories, category_summary, eligible_products, season=season
+        # 推荐单品：引流款 / 利润款 / 库存款（宽池含在途可卖；库存款仍主仓>200）
+        wide_for_skus = [
+            p
+            for p in all_products
+            if p.get("category") in set(sorted_categories)
+            and self._is_product_season_match(p, season)
+            and float(p.get("return_rate", 0) or 0) <= 0.8
+        ]
+        if avg_humidity >= self.HIGH_HUMIDITY_THRESHOLD:
+            wide_for_skus = [
+                p
+                for p in wide_for_skus
+                if p.get("category") != "针织衫" or self._is_quick_dry_candidate(p)
+            ]
+        reco_pack = self._get_recommended_products(
+            sorted_categories,
+            category_summary,
+            wide_for_skus,
+            season=season,
         )
+        recommended_products = reco_pack["merged"]
+        recommended_products_by_tag = reco_pack["by_tag"]
 
         # 拼装规则说明
         rule_labels = [r["label"] for r in matched_rules]
@@ -1147,7 +1256,8 @@ class BIDataService:
             "weather_desc": rule_desc,
             "recommended_categories": sorted_categories,
             "category_summary": category_summary,
-            "recommended_products": recommended_products,  # 推荐单品列表
+            "recommended_products": recommended_products,  # 引流+利润+库存合并列表（带 recommend_tag）
+            "recommended_products_by_tag": recommended_products_by_tag,
             "purchase_advice": purchase_advice,
             "total_stock": sum(s["total_stock"] for s in category_summary.values()),
             "total_inbound": sum(s["total_inbound"] for s in category_summary.values()),
@@ -1180,7 +1290,12 @@ class BIDataService:
                 "national_rainy_city_count": national_rainy_city_count,
                 "brand": normalized_brand,
                 "category_scope": "all products in recommended categories",
-                "single_product_stock_filter": "stock>200",
+                "single_product_roles": (
+                    "引流款/利润款：可售库存（含主仓+销退仓+采购在途+销退在途-云仓-订单占有）达阈值；"
+                    "利润款另需 sku_unit_cost.json 成本与有效售价。"
+                    "库存款：主仓 stock>200，按原库存推荐指数排序。"
+                ),
+                "single_product_stock_filter": "库存款主仓>200；引流/利润看 available_stock",
                 "recommendation_category_scope": (
                     f"体感≥{self.OUTERWEAR_STRIP_MIN_ADJ_TEMP}°C 时不推荐大衣/短外套/风衣；"
                     f"体感≥{self.SUPPLEMENTAL_OVERLAY_MERGE_BELOW_ADJ_TEMP}°C 时不并入全国多雨/高湿/大风。"
@@ -1191,93 +1306,160 @@ class BIDataService:
             }
         }
     
+    def _format_recommended_product_row(
+        self,
+        product: Dict[str, Any],
+        *,
+        recommend_tag: str,
+        recommend_tag_key: str,
+        role_score: float,
+    ) -> Dict[str, Any]:
+        net_sales = int(product.get("net_sales_qty", 0) or 0)
+        cost = self._get_unit_cost(product)
+        price = self._get_effective_retail_price(product)
+        margin = None
+        if cost is not None and price > 0 and price > cost:
+            margin = round((price - cost) / price, 4)
+        return {
+            "sku_id": product.get("sku_id", ""),
+            "name": product.get("name", ""),
+            "product_name": product.get("product_name", ""),
+            "category": product.get("category", ""),
+            "brand": product.get("brand", "marius"),
+            "stock": product.get("stock", 0),
+            "sales_return_stock": product.get("sales_return_stock", 0),
+            "inbound": product.get("inbound", 0),
+            "sales_return_inbound": product.get("sales_return_inbound", 0),
+            "virtual_cloud_stock": product.get("virtual_cloud_stock", 0),
+            "order_occupied": product.get("order_occupied", 0),
+            "available_stock": product.get("available_stock", product.get("stock", 0)),
+            "sales_qty": int(product.get("sales_qty", 0) or 0),
+            "image_url": product.get("image_url", ""),
+            "return_rate": product.get("return_rate", 0),
+            "conversion_rate": product.get("conversion_rate", 0),
+            "recommendation_score": role_score,
+            "recommend_tag": recommend_tag,
+            "recommend_tag_key": recommend_tag_key,
+            "estimated_total_net_sales": net_sales,
+            "estimated_total_net_sales_note": "口径：观远「款净销量」字段（历史/统计周期以 BI 卡片为准）",
+            "retail_price": price if price > 0 else None,
+            "gross_margin_rate": margin,
+            "size_completeness": product.get("size_completeness", 0.85),
+            "uses_procurement_inbound": recommend_tag in ("引流款", "利润款"),
+        }
+
     def _get_recommended_products(
         self,
         categories: List[str],
         category_summary: Dict[str, Any],
-        all_products: List[Dict[str, Any]],
+        wide_products: List[Dict[str, Any]],
         season: str = "spring",
-        max_products: int = 50,
-        per_category_limit: int = 5
-    ) -> List[Dict[str, Any]]:
+        max_per_tag: int = 36,
+        per_category_limit: int = 4,
+    ) -> Dict[str, Any]:
         """
-        从推荐品类中选取推荐单品
-        
-        选取逻辑：
-        1. 优先从推荐品类中选取
-        2. 按推荐指数排序（可售库存权重80%，转化率10%，退货率10%）
-        3. 每个品类最多选取2个单品，保证多样性
+        三类推荐：
+        - 引流款：高销量/转化（可售含在途）
+        - 利润款：高毛利（需 sku_unit_cost.json；可售含在途）
+        - 库存款：主仓充足清库存（沿用原库存指数）
+        同一 sku 优先归入引流 > 利润 > 库存。
         """
-        recommended = []
-        category_count = {}  # 记录每个品类已选取的数量
-        
-        # 筛选出推荐品类中的产品
-        category_products = [
-            p for p in all_products
-            if p["category"] in categories and self._is_product_season_match(p, season)
-        ]
-        
-        # 计算每个产品的推荐指数并排序
-        for product in category_products:
-            cat = product["category"]
-            # 跳过退货率过高的产品（>80%）
-            if product.get("return_rate", 0) > 0.8:
-                continue
-            
-            # 计算推荐指数（0-100）
-            score = self.calculate_recommendation_score(product)
-            product_with_score = product.copy()
-            product_with_score["recommendation_score"] = score
-            recommended.append(product_with_score)
-        
-        # 按推荐指数降序排序
-        recommended.sort(key=lambda x: x["recommendation_score"], reverse=True)
-        
-        # 去重款号，避免同款重复展示
-        deduplicated = []
-        seen_sku = set()
-        for product in recommended:
-            sku_id = str(product.get("sku_id", "")).strip()
-            if not sku_id or sku_id in seen_sku:
-                continue
-            seen_sku.add(sku_id)
-            deduplicated.append(product)
+        min_avail = int(os.getenv("RECOMMEND_MIN_AVAILABLE", "30"))
+        traffic_min_net = int(os.getenv("RECOMMEND_TRAFFIC_MIN_NET_SALES", "3"))
 
-        # 按品类限制，保证多样性同时提升总推荐数
-        final_products = []
-        for product in deduplicated:
-            cat = product["category"]
-            if cat not in category_count:
-                category_count[cat] = 0
-            
-            if category_count[cat] < per_category_limit and len(final_products) < max_products:
-                final_products.append(product)
-                category_count[cat] += 1
-        
-        # 格式化返回数据
-        result = []
-        for product in final_products:
-            result.append({
-                "sku_id": product.get("sku_id", ""),
-                "name": product.get("name", ""),
-                "product_name": product.get("product_name", ""),
-                "category": product.get("category", ""),
-                "brand": product.get("brand", "marius"),
-                "stock": product.get("stock", 0),
-                "sales_return_stock": product.get("sales_return_stock", 0),
-                "inbound": product.get("inbound", 0),
-                "sales_return_inbound": product.get("sales_return_inbound", 0),
-                "virtual_cloud_stock": product.get("virtual_cloud_stock", 0),
-                "order_occupied": product.get("order_occupied", 0),
-                "available_stock": product.get("available_stock", product.get("stock", 0)),
-                "image_url": product.get("image_url", ""),
-                "return_rate": product.get("return_rate", 0),
-                "conversion_rate": product.get("conversion_rate", 0),
-                "recommendation_score": product.get("recommendation_score", 0),
-                "size_completeness": product.get("size_completeness", 0.85)
-            })
-        
-        return result
+        traffic_rows: List[Dict[str, Any]] = []
+        profit_rows: List[Dict[str, Any]] = []
+        inventory_rows: List[Dict[str, Any]] = []
+        used: Set[str] = set()
+
+        for cat in categories:
+            cat_ps = [p for p in wide_products if p.get("category") == cat]
+            if not cat_ps:
+                continue
+
+            def _traffic_eligible(p: Dict[str, Any]) -> bool:
+                a = int(p.get("available_stock", p.get("stock", 0)) or 0)
+                if a < min_avail:
+                    return False
+                net = int(p.get("net_sales_qty", 0) or 0)
+                sq = int(p.get("sales_qty", 0) or 0)
+                return net >= traffic_min_net or sq >= traffic_min_net * 3
+
+            def _profit_eligible(p: Dict[str, Any]) -> bool:
+                a = int(p.get("available_stock", p.get("stock", 0)) or 0)
+                if a < min_avail:
+                    return False
+                cost = self._get_unit_cost(p)
+                price = self._get_effective_retail_price(p)
+                return cost is not None and price > 0 and price > cost
+
+            t_pool = [p for p in cat_ps if _traffic_eligible(p)]
+            t_pool.sort(key=lambda x: self.calculate_traffic_score(x), reverse=True)
+            for p in t_pool:
+                sku = str(p.get("sku_id", "")).strip()
+                if not sku or sku in used:
+                    continue
+                if len([x for x in traffic_rows if x["category"] == cat]) >= per_category_limit:
+                    break
+                if len(traffic_rows) >= max_per_tag:
+                    break
+                used.add(sku)
+                sc = self.calculate_traffic_score(p)
+                traffic_rows.append(
+                    self._format_recommended_product_row(
+                        p, recommend_tag="引流款", recommend_tag_key="traffic", role_score=sc
+                    )
+                )
+
+            p_pool = [p for p in cat_ps if str(p.get("sku_id", "")).strip() not in used and _profit_eligible(p)]
+            p_pool.sort(key=lambda x: self.calculate_profit_score(x), reverse=True)
+            for p in p_pool:
+                sku = str(p.get("sku_id", "")).strip()
+                if not sku or sku in used:
+                    continue
+                if len([x for x in profit_rows if x["category"] == cat]) >= per_category_limit:
+                    break
+                if len(profit_rows) >= max_per_tag:
+                    break
+                used.add(sku)
+                sc = self.calculate_profit_score(p)
+                profit_rows.append(
+                    self._format_recommended_product_row(
+                        p, recommend_tag="利润款", recommend_tag_key="profit", role_score=sc
+                    )
+                )
+
+            i_pool = [
+                p
+                for p in cat_ps
+                if str(p.get("sku_id", "")).strip() not in used and self._is_eligible_stock_product(p)
+            ]
+            i_pool.sort(key=lambda x: self.calculate_recommendation_score(x), reverse=True)
+            for p in i_pool:
+                sku = str(p.get("sku_id", "")).strip()
+                if not sku or sku in used:
+                    continue
+                if len([x for x in inventory_rows if x["category"] == cat]) >= per_category_limit:
+                    break
+                if len(inventory_rows) >= max_per_tag:
+                    break
+                used.add(sku)
+                sc = self.calculate_recommendation_score(p)
+                inventory_rows.append(
+                    self._format_recommended_product_row(
+                        p, recommend_tag="库存款", recommend_tag_key="inventory", role_score=sc
+                    )
+                )
+
+        merged = traffic_rows + profit_rows + inventory_rows
+        return {
+            "by_tag": {
+                "traffic": traffic_rows,
+                "profit": profit_rows,
+                "inventory": inventory_rows,
+            },
+            "merged": merged,
+        }
 
     def _generate_purchase_advice(
         self,
@@ -1418,12 +1600,11 @@ if __name__ == "__main__":
     for cat, data in result['category_summary'].items():
         print(f"  {cat}: 现货{data['total_stock']}件 | 在途{data['total_inbound']}件")
     
-    print(f"\nTop 3 推荐商品:")
-    for i, product in enumerate(result['top_products'][:3], 1):
-        print(f"\n{i}. {product['name']} ({product['category']})")
-        print(f"   推荐指数: {product['recommendation_score']}")
-        print(f"   库存: {product['stock']} | 尺码齐全度: {product['size_completeness']}")
-        print(f"   退货率: {product['return_rate']*100:.1f}% | 转化率: {product['conversion_rate']*100:.1f}%")
+    print(f"\nTop 推荐商品（合并列表）:")
+    for i, product in enumerate(result.get("recommended_products", [])[:5], 1):
+        print(f"\n{i}. [{product.get('recommend_tag', '')}] {product.get('name')} ({product.get('category')})")
+        print(f"   角色分: {product.get('recommendation_score')} | 预计总净销量: {product.get('estimated_total_net_sales')}")
+        print(f"   库存: {product.get('stock')} | 退货率: {product.get('return_rate', 0)*100:.1f}% | 转化: {product.get('conversion_rate', 0)*100:.1f}%")
     
     print(f"\n采购建议:")
     for advice in result['purchase_advice']:
