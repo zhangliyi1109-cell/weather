@@ -32,6 +32,12 @@ weather_v2_release_*.tar.gz
 # Environment variables
 .env
 
+# 单品成本/售价（本地从 sku_unit_cost.example.json 复制）
+sku_unit_cost.json
+
+# 登录账号（本地从 app_users.example.json 复制）
+app_users.json
+
 # Debug/test outputs
 bi_*.json
 bi_*.png

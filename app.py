@@ -14,6 +14,63 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _normalize_app_users(raw: dict) -> dict:
+    """将 JSON 对象规范为 { username: { password, role } }。"""
+    out: dict = {}
+    if not isinstance(raw, dict):
+        return out
+    for username, v in raw.items():
+        key = str(username).strip()
+        if not key or key.startswith("_"):
+            continue
+        if not isinstance(v, dict):
+            continue
+        pw = v.get("password")
+        role = str(v.get("role", "user") or "user").strip() or "user"
+        if pw is None or str(pw).strip() == "":
+            continue
+        out[key] = {"password": str(pw), "role": role}
+    return out
+
+
+def load_app_users() -> dict:
+    """
+    启动时加载登录用户：
+    1) APP_USERS_FILE（默认项目根 app_users.json）
+    2) APP_USERS_JSON 环境变量（JSON 对象，与文件合并；同名键以环境变量为准）
+    若两者均无有效用户，回退内置开发账号并打印警告（生产请务必配置）。
+    """
+    base = os.path.dirname(os.path.abspath(__file__))
+    users: dict = {}
+    path = (os.getenv("APP_USERS_FILE") or "app_users.json").strip()
+    full = path if os.path.isabs(path) else os.path.join(base, path)
+    if os.path.isfile(full):
+        try:
+            with open(full, "r", encoding="utf-8") as f:
+                users = _normalize_app_users(json.load(f))
+        except Exception as e:
+            print(f"⚠️ 读取 APP_USERS_FILE 失败 ({full}): {e}")
+            users = {}
+    inj = (os.getenv("APP_USERS_JSON") or "").strip()
+    if inj:
+        try:
+            merged = _normalize_app_users(json.loads(inj))
+            users.update(merged)
+        except Exception as e:
+            print(f"⚠️ 解析 APP_USERS_JSON 失败: {e}")
+    if not users:
+        print(
+            "⚠️ 未配置登录用户：无有效 app_users.json 且未设置 APP_USERS_JSON。"
+            "已回退内置开发账号；阿里云等生产环境请配置后再部署。"
+        )
+        users = {
+            "admin": {"password": "admin123", "role": "admin"},
+            "user": {"password": "user123", "role": "user"},
+        }
+    return users
+
+
 from weather_service import get_weather_service
 from bi_data_service import get_bi_service, reset_bi_service
 from feishu_service import get_feishu_service
@@ -28,10 +85,7 @@ _secret = (
 )
 app.secret_key = _secret or "weather-v2-dev-secret"
 
-USERS = {
-    "admin": {"password": "admin123", "role": "admin"},
-    "user": {"password": "user123", "role": "user"}
-}
+USERS = load_app_users()
 
 # 全局服务实例
 weather_service = get_weather_service()

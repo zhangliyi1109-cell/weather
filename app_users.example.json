@@ -1,0 +1,11 @@
+{
+  "_comment": "复制为 app_users.json（勿提交真实密码到 Git）。role: admin=可改规则；user=仅正式看板。",
+  "admin": {
+    "password": "请改为强密码",
+    "role": "admin"
+  },
+  "viewer": {
+    "password": "请改为强密码",
+    "role": "user"
+  }
+}
