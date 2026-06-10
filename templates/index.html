@@ -182,6 +182,24 @@
             </div>
         </div>
 
+        <!-- 二十四节气 · 中长期展望（超越16天数值预报） -->
+        <div id="solarTermPanel" class="glass-card rounded-2xl p-5 mb-6 border border-amber-200/60 bg-gradient-to-r from-amber-50/90 to-orange-50/80 hidden">
+            <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+                <div>
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="text-2xl">🌾</span>
+                        <h3 class="text-lg font-semibold text-amber-900">二十四节气 · 备货节奏</h3>
+                        <span id="solarTermBadge" class="text-xs px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 font-medium">--</span>
+                    </div>
+                    <p id="solarTermOutlook" class="text-sm text-amber-900/80 leading-relaxed max-w-3xl">--</p>
+                </div>
+                <div class="shrink-0 text-sm text-amber-800/90">
+                    <p class="font-medium mb-1">近期节气节点</p>
+                    <ul id="solarTermUpcoming" class="space-y-1 list-disc list-inside"></ul>
+                </div>
+            </div>
+        </div>
+
         <!-- Weather Overview -->
         <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
             <!-- Current Weather Card -->
@@ -200,7 +218,7 @@
             <!-- Rain Days -->
             <div class="glass-card rounded-2xl p-6 metric-card">
                 <div class="flex items-center justify-between mb-4">
-                    <span class="text-gray-500 text-sm">16天预报降雨天数</span>
+                    <span class="text-gray-500 text-sm">7天加权降雨天数</span>
                     <span class="text-blue-500">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>
@@ -433,6 +451,7 @@
         let currentCity = '北京';
         let currentBrand = 'all';
         let weatherData = null;
+        let solarTermData = null;
         let recommendationData = null;
         let charts = {};
         let productPage = 1;
@@ -853,6 +872,7 @@
                 if (result.success) {
                     weatherData = result.data.weather;
                     recommendationData = result.data.recommendations;
+                    solarTermData = result.data.solar_term || null;
                     productPage = 1;
                     updateDashboard();
                     document.getElementById('updateTime').textContent = 
@@ -888,7 +908,8 @@
             
             // Update Metrics
             updateMetrics(cityRec);
-            
+            updateSolarTermPanel(cityRec);
+
             // Update Charts
             updateCharts(cityWeather);
             
@@ -897,6 +918,31 @@
             updateCategoryCards(cityRec);
             updateProductCards(cityRec);
             updatePurchaseAdvice(cityRec);
+        }
+
+        function updateSolarTermPanel(rec) {
+            const panel = document.getElementById('solarTermPanel');
+            const ctx = solarTermData || rec.solar_term;
+            if (!panel || !ctx || !ctx.current) {
+                if (panel) panel.classList.add('hidden');
+                return;
+            }
+            panel.classList.remove('hidden');
+            const cur = ctx.current;
+            const badge = document.getElementById('solarTermBadge');
+            const outlook = document.getElementById('solarTermOutlook');
+            const list = document.getElementById('solarTermUpcoming');
+            if (badge) {
+                badge.textContent = `${cur.name} · 第${cur.day_in_term}天 · ${ctx.season_label || ''}`;
+            }
+            const summary = (rec.weather_summary && rec.weather_summary.solar_term_outlook) || ctx.outlook_summary || '';
+            if (outlook) outlook.textContent = summary;
+            if (list) {
+                const items = (ctx.upcoming_terms || []).slice(0, 4);
+                list.innerHTML = items.length
+                    ? items.map(t => `<li>${t.name}（${t.days_away}天后）— ${t.guidance_tip || ''}</li>`).join('')
+                    : '<li>暂无后续节点</li>';
+            }
         }
 
         // Update Weather Rule Description

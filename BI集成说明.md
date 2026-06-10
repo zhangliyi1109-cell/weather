@@ -7,36 +7,44 @@
 ## 📊 数据来源
 
 ### BI 系统信息
+
 - **BI 平台**: 观远数据 (GuanData)
-- **BI 地址**: https://bi.marius.vip
+- **BI 地址**: [https://bi.marius.vip](https://bi.marius.vip)
 - **数据来源页面**: 库存消耗进度跟踪 (pageId: f670828ac13a043fc87114a8)
 - **数据卡片**: MARIUS25秋冬产品库存消耗进度跟踪 (cardId: kbcf363fdb24641079e338c0)
 
 ### 获取的数据字段
-| 字段 | 说明 | 来源 |
-|------|------|------|
-| sku_id | 款式编码 | BI |
-| name | 小名（商品名称） | BI |
-| category | 产品分类 | BI |
-| stock | 现货库存（指标1） | BI |
-| inbound | 采购在途（指标2） | BI |
-| size_completeness | 尺码齐全度 | 默认 0.85 |
-| return_rate | 退货率 | 默认 0.15 |
-| conversion_rate | 转化率 | 默认 0.05 |
+
+
+| 字段                | 说明        | 来源      |
+| ----------------- | --------- | ------- |
+| sku_id            | 款式编码      | BI      |
+| name              | 小名（商品名称）  | BI      |
+| category          | 产品分类      | BI      |
+| stock             | 现货库存（指标1） | BI      |
+| inbound           | 采购在途（指标2） | BI      |
+| size_completeness | 尺码齐全度     | 默认 0.85 |
+| return_rate       | 退货率       | 默认 0.15 |
+| conversion_rate   | 转化率       | 默认 0.05 |
+
 
 ## 📁 新增文件
 
-| 文件 | 说明 |
-|------|------|
-| `guandata.py` | 观远 BI API 封装脚本（从 skill 复制） |
-| `bi_inventory_service.py` | BI 库存数据服务模块 |
-| `BI集成说明.md` | 本文档 |
+
+| 文件                        | 说明                         |
+| ------------------------- | -------------------------- |
+| `guandata.py`             | 观远 BI API 封装脚本（从 skill 复制） |
+| `bi_inventory_service.py` | BI 库存数据服务模块                |
+| `BI集成说明.md`               | 本文档                        |
+
 
 ## 🔧 修改的文件
 
-| 文件 | 修改内容 |
-|------|----------|
+
+| 文件                   | 修改内容           |
+| -------------------- | -------------- |
 | `bi_data_service.py` | 集成真实 BI 数据获取逻辑 |
+
 
 ## 🚀 使用方法
 
@@ -97,8 +105,9 @@ python guandata.py dump kbcf363fdb24641079e338c0
 ## 🔐 认证信息
 
 BI 系统使用 Token 认证，已配置：
+
 - App Token: d3dc3da5b8356403e882269e
-- 登录账号: admin@guandata.com
+- 登录账号: [admin@guandata.com](mailto:admin@guandata.com)
 
 Token 会自动缓存到 `~/.openclaw/skills/guandata-bi/scripts/.token_cache`
 

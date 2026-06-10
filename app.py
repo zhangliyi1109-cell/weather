@@ -75,11 +75,16 @@ from weather_service import get_weather_service
 from bi_data_service import get_bi_service, reset_bi_service
 from feishu_service import get_feishu_service
 from config import FEISHU_BITABLE
+from solar_terms import (
+    build_solar_term_context,
+    infer_season_from_solar_term,
+    get_solar_term_on,
+)
 
 app = Flask(__name__)
 CORS(app)
 # 若 .env 里写了 APP_SECRET_KEY= 但留空，getenv 会得到 ""，Flask 会报 session 不可用
-# PP_SECRET_KEY：兼容 Railway 等处误填变量名（与 APP_SECRET_KEY 等价）
+# PP_SECRET_KEY：兼容部分平台误填变量名（与 APP_SECRET_KEY 等价）
 _secret = (
     (os.getenv("APP_SECRET_KEY") or os.getenv("PP_SECRET_KEY") or "").strip()
 )
@@ -123,7 +128,7 @@ def get_cached_weather():
 
 
 def infer_season_by_month(month: int) -> str:
-    """按月份推断季节"""
+    """按月份推断季节（兜底）"""
     if month in [12, 1, 2]:
         return "winter"
     if month in [3, 4, 5]:
@@ -131,6 +136,24 @@ def infer_season_by_month(month: int) -> str:
     if month in [6, 7, 8]:
         return "summer"
     return "autumn"
+
+
+def infer_season_for_today() -> str:
+    """优先按当前节气推断季节，失败时回退到月份。"""
+    try:
+        term_name = get_solar_term_on(datetime.now().date())["name"]
+        return infer_season_from_solar_term(term_name)
+    except Exception:
+        return infer_season_by_month(datetime.now().month)
+
+
+def get_solar_term_payload(temp_trend: str = "stable") -> dict:
+    """构建 API 用的节气上下文。"""
+    return build_solar_term_context(
+        today=datetime.now().date(),
+        forecast_horizon_days=16,
+        temp_trend=temp_trend,
+    )
 
 
 def calculate_avg_wind_scale(city_daily: list) -> float:
@@ -301,7 +324,7 @@ def refresh_bi_cache(force: bool = False):
 
     bi_service.clear_cache()
     # 预热一次，避免首次接口请求延迟
-    _ = bi_service.fetch_bi_inventory_data()
+    _ = bi_service.fetch_bi_inventory_data(force_refresh=force)
     bi_last_refresh_date = today
     print(f"✓ BI数据已刷新: {datetime.now().isoformat()}")
 
@@ -438,11 +461,18 @@ def api_weather():
         
         # 添加趋势分析
         trends = weather_service.analyze_weather_trends(weather_data)
+        national_context = build_national_weather_context(
+            weather_data, trends
+        ) if weather_data else {}
+        solar_term = get_solar_term_payload(
+            temp_trend=national_context.get("temp_trend", "stable")
+        )
         
         return jsonify({
             "success": True,
             "data": formatted_data,
             "trends": trends,
+            "solar_term": solar_term,
             "update_time": datetime.now().isoformat()
         })
         
@@ -485,7 +515,11 @@ def api_recommendations():
         national_context = build_national_weather_context(weather_data, trends)
         avg_humidity = national_context.get("avg_humidity", 60)
         avg_wind_scale = national_context.get("avg_wind_scale", 3)
-        season = infer_season_by_month(datetime.now().month)
+        season = infer_season_for_today()
+        solar_ctx = get_solar_term_payload(
+            temp_trend=national_context.get("temp_trend", "stable")
+        )
+        solar_term_name = solar_ctx.get("current", {}).get("name", "")
         national_rainy_city_count = calculate_national_rainy_city_count(weather_data)
         
         # 获取参数（如果没有提供，使用自动计算的值）
@@ -510,6 +544,7 @@ def api_recommendations():
             avg_humidity=avg_humidity,
             avg_wind_scale=avg_wind_scale,
             season=season,
+            solar_term=solar_term_name,
             national_rainy_city_count=national_rainy_city_count,
             brand=brand
         )
@@ -523,12 +558,16 @@ def api_recommendations():
             "temp_trend": temp_trend,
             "temp_trend_desc": national_context.get("temp_trend_desc", ""),
             "city_count": national_context.get("city_count", 0),
-            "city_weights": national_context.get("city_weights", {})
+            "city_weights": national_context.get("city_weights", {}),
+            "solar_term": solar_term_name,
+            "solar_term_outlook": solar_ctx.get("outlook_summary", ""),
         }
+        recommendations["solar_term"] = solar_ctx
         
         return jsonify({
             "success": True,
             "data": recommendations,
+            "solar_term": solar_ctx,
             "update_time": datetime.now().isoformat()
         })
         
@@ -627,6 +666,11 @@ def api_dashboard():
         
         # 全国综合趋势（统一推荐方案）
         national_context = build_national_weather_context(weather_data, trends)
+        solar_ctx = get_solar_term_payload(
+            temp_trend=national_context.get("temp_trend", "stable")
+        )
+        solar_term_name = solar_ctx.get("current", {}).get("name", "")
+        season = infer_season_for_today()
 
         # 为每个城市写入同一套推荐（直播面对所有城市）
         recommendations = {}
@@ -638,7 +682,8 @@ def api_dashboard():
                 city=city,
                 avg_humidity=national_context.get("avg_humidity", 60),
                 avg_wind_scale=national_context.get("avg_wind_scale", 3),
-                season=infer_season_by_month(datetime.now().month),
+                season=season,
+                solar_term=solar_term_name,
                 national_rainy_city_count=calculate_national_rainy_city_count(weather_data),
                 brand=brand
             )
@@ -649,8 +694,11 @@ def api_dashboard():
                 "temp_trend": national_context.get("temp_trend"),
                 "temp_trend_desc": national_context.get("temp_trend_desc"),
                 "city_count": national_context.get("city_count", 0),
-                "city_weights": national_context.get("city_weights", {})
+                "city_weights": national_context.get("city_weights", {}),
+                "solar_term": solar_term_name,
+                "solar_term_outlook": solar_ctx.get("outlook_summary", ""),
             }
+            rec["solar_term"] = solar_ctx
             recommendations[city] = rec
         
         return jsonify({
@@ -658,7 +706,8 @@ def api_dashboard():
             "data": {
                 "weather": formatted_weather,
                 "trends": trends,
-                "recommendations": recommendations
+                "recommendations": recommendations,
+                "solar_term": solar_ctx,
             },
             "update_time": datetime.now().isoformat()
         })

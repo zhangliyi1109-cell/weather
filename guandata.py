@@ -31,22 +31,24 @@ try:
 except ImportError:
     pass
 
-# 配置（仅从环境变量读取；本地用 .env，Railway 在 Variables 中填写）
+# 配置（仅从环境变量读取；本地用 .env，生产环境填环境变量）
 # 勿在代码中写死应用 Token，避免泄露且防止空字符串变量意外禁用 sign-in。
 BI_BASE = os.getenv("GUANDATA_BASE_URL", "https://bi.marius.vip").rstrip("/")
 APP_TOKEN = (os.getenv("GUANDATA_APP_TOKEN") or "").strip()
 LOGIN_ID = (os.getenv("GUANDATA_LOGIN_ID") or "").strip()
+# 与 BI集成说明.md 一致；仅在本机 guancli 已登录且未配置 GUANDATA_APP_TOKEN 时作 sign-in 回退
+_DEFAULT_APP_TOKEN = "d3dc3da5b8356403e882269e"
 
 _env_x_warn = (os.getenv("GUANDATA_X_AUTH_TOKEN") or "").strip()
 if _env_x_warn and not (APP_TOKEN and LOGIN_ID):
     print(
         "⚠ 观远：已设置 GUANDATA_X_AUTH_TOKEN 但未配置 GUANDATA_APP_TOKEN+GUANDATA_LOGIN_ID；"
-        "Token 过期后无法自动续期，请在 Railway 补充 sign-in 凭证并去掉过期 X_AUTH。"
+        "Token 过期后无法自动续期，请补充 GUANDATA_APP_TOKEN+GUANDATA_LOGIN_ID 并去掉过期 X_AUTH。"
     )
 
 
 def _default_token_cache_path() -> str:
-    """Railway/容器默认可写目录；可通过 GUANDATA_TOKEN_CACHE_PATH 覆盖。"""
+    """容器/本机默认可写目录；可通过 GUANDATA_TOKEN_CACHE_PATH 覆盖。"""
     explicit = os.getenv("GUANDATA_TOKEN_CACHE_PATH", "").strip()
     if explicit:
         return os.path.expanduser(explicit)
@@ -123,6 +125,82 @@ class GuanBI:
         self._page_cache.clear()
         self._page_detail_cache.clear()
 
+    def _load_guancli_profile(self) -> Optional[Dict[str, Any]]:
+        """读取 guancli 默认 profile（login_id / base_url 等）。"""
+        candidates = [
+            os.path.expanduser("~/Library/Application Support/guancli/config.json"),
+            os.path.expanduser("~/.config/guancli/config.json"),
+        ]
+        for path in candidates:
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                profiles = cfg.get("profiles") or {}
+                prof = None
+                for p in profiles.values():
+                    if isinstance(p, dict) and p.get("is_default"):
+                        prof = p
+                        break
+                if prof is None and profiles:
+                    prof = next(iter(profiles.values()))
+                if isinstance(prof, dict):
+                    return prof
+            except Exception:
+                continue
+        return None
+
+    def _resolve_signin_credentials(self) -> tuple:
+        """合并 .env 与 guancli profile，得到 Public API sign-in 用的 (app_token, login_id)。"""
+        app_token = (os.getenv("GUANDATA_APP_TOKEN") or "").strip()
+        login_id = (os.getenv("GUANDATA_LOGIN_ID") or "").strip()
+        prof = self._load_guancli_profile()
+        if prof:
+            if not login_id:
+                login_id = str(prof.get("login_id") or "").strip()
+            if not app_token:
+                app_token = str(prof.get("app_token") or _DEFAULT_APP_TOKEN).strip()
+        return app_token, login_id
+
+    def _signin_with_credentials(self, app_token: str, login_id: str) -> bool:
+        """调用 Public API loginId/sign-in 换取 X-Auth-Token。"""
+        if not app_token or not login_id:
+            return False
+        resp = self.session.post(
+            f"{BI_BASE}/public-api/user/loginId/sign-in",
+            json={"token": app_token, "loginId": login_id},
+            timeout=self.REQUEST_TIMEOUT,
+        )
+        try:
+            data = resp.json()
+        except Exception:
+            print(f"✗ 登录失败: 响应非 JSON HTTP {resp.status_code}")
+            return False
+        if data.get("result") == "ok":
+            self.x_auth_token = data["response"]["token"]
+            expire_at_str = data["response"].get("expireAt", "未知")
+            print(f"✓ 登录成功，Token 有效期至: {expire_at_str}")
+            self._save_token_cache(expire_at_str)
+            self._page_cache.clear()
+            self._page_detail_cache.clear()
+            return True
+        print(f"✗ 登录失败: {data.get('error') or data.get('message')}")
+        return False
+
+    def _try_guancli_signin(self) -> bool:
+        """
+        开发机回退：guancli 的 JWT/uIdToken 不能用于 Public API；
+        改用 guancli profile 的 login_id + 应用 Token 走 sign-in。
+        """
+        app_token, login_id = self._resolve_signin_credentials()
+        if not login_id:
+            return False
+        if self._signin_with_credentials(app_token, login_id):
+            print("✓ 使用 guancli profile + Public API sign-in（本地开发）")
+            return True
+        return False
+
     def _load_cached_token(self) -> bool:
         """尝试加载缓存的 token"""
         try:
@@ -175,7 +253,7 @@ class GuanBI:
         """
         获取 X-Auth-Token。
 
-        Railway 推荐：配置 GUANDATA_APP_TOKEN + GUANDATA_LOGIN_ID，通过 sign-in 自动换票并写入缓存；
+        生产推荐：配置 GUANDATA_APP_TOKEN + GUANDATA_LOGIN_ID，通过 sign-in 自动换票并写入缓存；
         GUANDATA_X_AUTH_TOKEN 有时效，仅靠环境变量无法续期。
 
         若必须只用粘贴的 X-Auth-Token：设 GUANDATA_ONLY_ENV_X_AUTH_TOKEN=true。
@@ -186,7 +264,8 @@ class GuanBI:
             "yes",
         )
         env_x_token = os.getenv("GUANDATA_X_AUTH_TOKEN", "").strip()
-        has_signin = bool(str(APP_TOKEN).strip() and str(LOGIN_ID).strip())
+        signin_app, signin_login = self._resolve_signin_credentials()
+        has_signin = bool(signin_app and signin_login)
 
         if only_env and env_x_token:
             self.x_auth_token = env_x_token
@@ -200,42 +279,26 @@ class GuanBI:
                 return True
             if force:
                 self._invalidate_token_and_page_caches()
-            resp = self.session.post(
-                f"{BI_BASE}/public-api/user/loginId/sign-in",
-                json={"token": APP_TOKEN, "loginId": LOGIN_ID},
-                timeout=self.REQUEST_TIMEOUT,
-            )
-            try:
-                data = resp.json()
-            except Exception:
-                print(f"✗ 登录失败: 响应非 JSON HTTP {resp.status_code}")
-                return False
-            if data.get("result") == "ok":
-                self.x_auth_token = data["response"]["token"]
-                expire_at_str = data["response"].get("expireAt", "未知")
-                print(f"✓ 登录成功，Token 有效期至: {expire_at_str}")
-                self._save_token_cache(expire_at_str)
-                self._page_cache.clear()
-                self._page_detail_cache.clear()
-                return True
-            print(f"✗ 登录失败: {data.get('error')}")
-            return False
+            return self._signin_with_credentials(signin_app, signin_login)
 
         if env_x_token and not has_signin:
             self.x_auth_token = env_x_token
             if not force:
                 print(
                     "⚠ 使用 GUANDATA_X_AUTH_TOKEN（未配置 GUANDATA_APP_TOKEN+GUANDATA_LOGIN_ID，"
-                    "过期后无法自动换票；Railway 请改为 sign-in 并删除过期的 X_AUTH）"
+                    "过期后无法自动换票；请配置 GUANDATA_APP_TOKEN+GUANDATA_LOGIN_ID 并删除过期的 X_AUTH）"
                 )
             return True
 
         if not force and self._load_cached_token():
             return True
 
+        if self._try_guancli_signin():
+            return True
+
         print(
             "✗ 观远未配置：请设置 GUANDATA_APP_TOKEN + GUANDATA_LOGIN_ID，"
-            "或临时设置 GUANDATA_X_AUTH_TOKEN"
+            "或临时设置 GUANDATA_X_AUTH_TOKEN，或在本机执行 guancli auth login"
         )
         return False
     
@@ -423,7 +486,7 @@ class GuanBI:
                 self.login(force=True)
                 if not self.x_auth_token:
                     raise Exception(
-                        "观远鉴权失败：无法取得 X-Auth-Token；请在 Railway 配置 "
+                        "观远鉴权失败：无法取得 X-Auth-Token；请配置 "
                         "GUANDATA_APP_TOKEN + GUANDATA_LOGIN_ID。"
                     )
                 continue
@@ -432,8 +495,8 @@ class GuanBI:
         err_low = last_err.lower()
         if "1018" in last_err or "token expired" in err_low or "not login" in err_low:
             hint = (
-                " 【处理】Railway Variables：填写 GUANDATA_APP_TOKEN、GUANDATA_LOGIN_ID，"
-                "删除已过期的 GUANDATA_X_AUTH_TOKEN，保存后重新部署。"
+                " 【处理】填写 GUANDATA_APP_TOKEN、GUANDATA_LOGIN_ID，"
+                "删除已过期的 GUANDATA_X_AUTH_TOKEN，重启服务。"
             )
         raise Exception(
             f"获取卡片数据失败: {last_err} (HTTP {resp.status_code}, card_id={card_id}){hint}"
@@ -464,6 +527,50 @@ class GuanBI:
                 continue
             break
         raise Exception(f"获取数据集数据失败: {last_err}")
+
+    def fetch_dataset_rows(
+        self,
+        ds_id: str,
+        *,
+        page_size: int = 5000,
+        max_rows: Optional[int] = None,
+        column_names: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        分页拉取数据集全量/部分行，返回 {列名: 值} 字典列表。
+        column_names 若指定则只保留这些列（按数据集 fd 顺序解析后再过滤）。
+        """
+        page_size = max(1, min(int(page_size or 5000), 20000))
+        offset = 0
+        all_rows: List[Dict[str, Any]] = []
+        col_names: List[str] = column_names[:] if column_names else []
+
+        while True:
+            chunk = self.get_dataset_data(ds_id, limit=page_size, offset=offset)
+            columns = chunk.get("columns") or []
+            if not col_names:
+                col_names = [str(c.get("name", "")) for c in columns if c.get("name")]
+            preview = chunk.get("preview") or chunk.get("data") or []
+            if not preview:
+                break
+            for raw in preview:
+                if not isinstance(raw, (list, tuple)):
+                    continue
+                row: Dict[str, Any] = {}
+                for i, name in enumerate(col_names):
+                    if i < len(raw):
+                        row[name] = raw[i]
+                all_rows.append(row)
+            offset += len(preview)
+            total = chunk.get("rowCount") or chunk.get("total")
+            if len(preview) < page_size:
+                break
+            if max_rows is not None and len(all_rows) >= max_rows:
+                all_rows = all_rows[:max_rows]
+                break
+            if isinstance(total, int) and offset >= total:
+                break
+        return all_rows
     
     def get_dataset_columns(self, ds_id: str) -> List[Dict]:
         """获取数据集字段信息"""

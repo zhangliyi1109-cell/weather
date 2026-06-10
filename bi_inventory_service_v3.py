@@ -203,6 +203,21 @@ class BIInventoryServiceV3:
         except Exception as e:
             print(f"⚠️ 快照保存失败: {e}")
 
+    def _snapshot_has_role_fields(self, data: List[Dict[str, Any]]) -> bool:
+        if not data:
+            return False
+        for item in data[: min(len(data), 80)]:
+            if str(item.get("price_position") or "").strip():
+                return True
+            if item.get("bi_price_ratio") is not None:
+                return True
+            raw = item.get("raw_data")
+            if isinstance(raw, dict) and (
+                str(raw.get("价格定位") or "").strip() or raw.get("倍率")
+            ):
+                return True
+        return False
+
     def _load_snapshot(self) -> List[Dict[str, Any]]:
         """加载最近一次成功抓取快照"""
         try:
@@ -211,8 +226,15 @@ class BIInventoryServiceV3:
             with open(self._snapshot_file, "r", encoding="utf-8") as f:
                 payload = json.load(f)
             data = payload.get("data", [])
+            if not isinstance(data, list):
+                return []
+            if not self._snapshot_has_role_fields(data):
+                print(
+                    f"⚠️ 忽略过期快照（{len(data)} 条）：缺少价格定位/倍率"
+                )
+                return []
             print(f"✓ 使用最近成功快照数据: {len(data)} 条")
-            return data if isinstance(data, list) else []
+            return data
         except Exception as e:
             print(f"⚠️ 快照读取失败: {e}")
             return []
@@ -319,6 +341,14 @@ class BIInventoryServiceV3:
                     price_position = str(
                         dims[_price_dim_idx].get("title", "") or ""
                     ).strip()
+                if not price_position:
+                    for dim in dims:
+                        if not isinstance(dim, dict):
+                            continue
+                        t = str(dim.get("title", "") or "").strip()
+                        if t in ("低", "中", "高", "空"):
+                            price_position = t
+                            break
 
                 parsed_rows.append({
                     "商品ID": product_id,
@@ -410,6 +440,7 @@ class BIInventoryServiceV3:
                     'product_name': row.get('产品名称', ''),
                     'style_tag': row.get('款虚拟分类', ''),
                     'price_position': str(row.get('价格定位', '') or '').strip(),
+                    'raw_data': row,
                     'image_url': row.get('图片(到款式)', ''),
                     'category': row.get('产品分类', '其他'),
                     'stock': main_stock,

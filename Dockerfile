@@ -1,4 +1,4 @@
-# Railway / 容器部署：自动读取平台注入的 PORT
+# 容器部署：自动读取平台注入的 PORT
 FROM python:3.12-slim-bookworm
 
 WORKDIR /app

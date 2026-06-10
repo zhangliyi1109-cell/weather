@@ -2,11 +2,38 @@
   "version": 1,
   "sources": {
     "inventory": {
+      "mode": "dataset",
+      "dataset_id": "g94553b7c10714125a095ea8",
+      "aggregate_by": "款式编码",
       "page_id": "你的页面pgId",
       "card_id": "",
-      "card_name_keyword": "拉新"
+      "card_name_keyword": "拉新",
+      "field_mapping": {
+        "style_code": "款式编码",
+        "short_name": "小名",
+        "product_name": "产品名称",
+        "category": "产品分类",
+        "image_url": "图片(到款式)",
+        "style_tag": "款虚拟分类",
+        "price_position": "价格定位",
+        "brand": "品牌",
+        "main_stock": "主仓实际库存",
+        "sales_return_stock": "销退仓库存",
+        "procurement_inbound": "采购在途数",
+        "sales_return_inbound": "销退在途数",
+        "virtual_cloud_stock": "虚拟云仓库存",
+        "order_occupied": "订单占有数",
+        "net_sales_qty": "款净销量",
+        "sales_qty": "款销售数量",
+        "return_rate": "发货后退货率判定值（款）",
+        "conversion_rate": "支付转化率(款)",
+        "retail_price": "销售价",
+        "unit_cost": "总成本",
+        "price_ratio": "倍率"
+      }
     },
     "sales_daily": {
+      "mode": "card",
       "page_id": "另一页面pgId",
       "card_id": "指定卡片cdId",
       "card_name_keyword": ""

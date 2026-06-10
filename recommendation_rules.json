@@ -31,6 +31,43 @@
     "短外套",
     "风衣"
   ],
+  "solar_term_overlays": [
+    {
+      "terms": ["立春", "雨水", "惊蛰"],
+      "categories": ["风衣", "衬衫", "针织衫", "西装"],
+      "description": "早春换季：薄外套与针织叠穿，南北分货"
+    },
+    {
+      "terms": ["春分", "清明", "谷雨"],
+      "categories": ["连衣裙", "半身裙", "衬衫", "T恤"],
+      "description": "仲春暮春：裙装与衬衫为主力波段"
+    },
+    {
+      "terms": ["立夏", "小满", "芒种"],
+      "categories": ["T恤", "连衣裙", "背心/吊带", "半身裙"],
+      "description": "入夏升温：短袖与裙装加大曝光"
+    },
+    {
+      "terms": ["夏至", "小暑", "大暑"],
+      "categories": ["T恤", "背心/吊带", "连衣裙", "休闲裤"],
+      "description": "盛夏酷热：清凉透气款为核心"
+    },
+    {
+      "terms": ["立秋", "处暑", "白露"],
+      "categories": ["针织衫", "衬衫", "风衣", "西装"],
+      "description": "初秋过渡：针织与薄风衣起量，兼顾秋老虎"
+    },
+    {
+      "terms": ["秋分", "寒露", "霜降"],
+      "categories": ["风衣", "卫衣", "牛仔裤", "大衣", "针织衫"],
+      "description": "深秋：外套厚度提升，牛仔卫衣转化窗"
+    },
+    {
+      "terms": ["立冬", "小雪", "大雪", "冬至", "小寒", "大寒"],
+      "categories": ["羽绒服", "大衣", "针织衫", "卫衣"],
+      "description": "冬令：羽绒与大衣为核心备货"
+    }
+  ],
   "temperature_rules": [
     {
       "categories": [
@@ -190,6 +227,7 @@
       "avg_humidity",
       "avg_wind_scale",
       "season",
+      "solar_term",
       "national_rainy_city_count"
     ],
     "outputs": [
@@ -229,6 +267,11 @@
         "description": "同天气下按品牌策略进行品类权重修正",
         "id": "brand_overlay",
         "name": "品牌修正规则"
+      },
+      {
+        "description": "按当前二十四节气节点叠加中长期备货品类（超越16天数值预报）",
+        "id": "solar_term_overlay",
+        "name": "节气叠加规则"
       }
     ]
   }

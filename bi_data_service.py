@@ -12,6 +12,8 @@ from typing import List, Dict, Any, Optional, Tuple, Set, Iterable
 
 # 导入BI库存服务（使用V3版本 - 从拉新款式表现卡片获取所有数据）
 from bi_inventory_service_v3 import BIInventoryServiceV3
+from bi_inventory_service_v4 import BIInventoryServiceV4
+from data_source_config import get_inventory_source_config
 
 
 class BIDataService:
@@ -181,17 +183,124 @@ class BIDataService:
     def _get_unit_cost(self, product: Dict[str, Any]) -> Optional[float]:
         sku = str(product.get("sku_id", "")).strip()
         row = self._load_sku_economics_map().get(sku)
-        if not row:
-            return None
-        return float(row["unit_cost"])
+        if row:
+            return float(row["unit_cost"])
+        bi_cost = product.get("bi_unit_cost")
+        if bi_cost is not None:
+            try:
+                c = float(bi_cost)
+                if c > 0:
+                    return c
+            except (TypeError, ValueError):
+                pass
+        return None
 
     def _get_effective_retail_price(self, product: Dict[str, Any]) -> float:
-        """售价：优先成本文件中的 retail_price，否则 BI 商品 price。"""
+        """售价：优先 sku_unit_cost.json，其次 BI 销售价/price。"""
         sku = str(product.get("sku_id", "")).strip()
         row = self._load_sku_economics_map().get(sku)
         if row and row.get("retail_price") is not None:
             return float(row["retail_price"])
+        bi_price = product.get("bi_retail_price")
+        if bi_price is not None:
+            try:
+                p = float(bi_price)
+                if p > 0:
+                    return p
+            except (TypeError, ValueError):
+                pass
         return float(product.get("price") or 0)
+
+    def _get_price_ratio(self, product: Dict[str, Any]) -> Optional[float]:
+        """倍率：优先 BI 数据集「倍率」列，否则用 售价/成本 推算。"""
+        raw = product.get("bi_price_ratio")
+        if raw is not None:
+            try:
+                r = float(raw)
+                if r > 0:
+                    return r
+            except (TypeError, ValueError):
+                pass
+        cost = self._get_unit_cost(product)
+        price = self._get_effective_retail_price(product)
+        if cost and cost > 0 and price > 0:
+            return price / float(cost)
+        return None
+
+    def _enrich_product_from_raw(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        从 raw_data / 字段映射补全价格定位、倍率、售价、成本（快照或卡片缺列时）。
+        """
+        cfg = get_inventory_source_config()
+        fm = cfg.get("field_mapping") or {}
+        raw = item.get("raw_data")
+        sources: List[Dict[str, Any]] = []
+        if isinstance(raw, dict):
+            sources.append(raw)
+        sources.append(item)
+
+        def _pick_val(logical: str) -> Any:
+            col = fm.get(logical) or logical
+            for src in sources:
+                if col in src and src[col] not in (None, ""):
+                    return src[col]
+                if logical in src and src[logical] not in (None, ""):
+                    return src[logical]
+            return None
+
+        if not str(item.get("price_position") or "").strip():
+            pp = _pick_val("price_position")
+            if pp is not None:
+                item["price_position"] = str(pp).strip()
+
+        if item.get("bi_price_ratio") is None:
+            ratio = _pick_val("price_ratio")
+            if ratio is not None:
+                try:
+                    r = float(ratio)
+                    if r > 0:
+                        item["bi_price_ratio"] = r
+                except (TypeError, ValueError):
+                    pass
+
+        if not float(item.get("price") or 0):
+            rp = _pick_val("retail_price")
+            if rp is not None:
+                try:
+                    p = float(rp)
+                    if p > 0:
+                        item["price"] = p
+                        item["bi_retail_price"] = p
+                except (TypeError, ValueError):
+                    pass
+
+        if item.get("bi_unit_cost") is None:
+            cost = _pick_val("unit_cost")
+            if cost is not None:
+                try:
+                    c = float(cost)
+                    if c > 0:
+                        item["bi_unit_cost"] = c
+                except (TypeError, ValueError):
+                    pass
+
+        if not int(item.get("net_sales_qty", 0) or 0):
+            ns = _pick_val("net_sales_qty")
+            if ns is not None:
+                try:
+                    item["net_sales_qty"] = int(float(ns))
+                except (TypeError, ValueError):
+                    pass
+
+        cvr = _pick_val("conversion_rate")
+        if cvr is not None and float(item.get("conversion_rate", 0) or 0) <= 0:
+            try:
+                v = float(cvr)
+                item["conversion_rate"] = v if v <= 1 else v / 100.0
+            except (TypeError, ValueError):
+                pass
+
+        return item
 
     def clear_cache(self):
         """清除缓存"""
@@ -202,9 +311,15 @@ class BIDataService:
         print("✓ BIDataService 缓存已清除")
     
     def _get_bi_service(self):
-        """获取BI服务实例"""
+        """按 guandata_sources.json 选择卡片(V3)或数据集(V4)取数。"""
         if self._bi_service is None:
-            self._bi_service = BIInventoryServiceV3()
+            cfg = get_inventory_source_config()
+            if cfg.get("mode") == "dataset" and cfg.get("dataset_id"):
+                print(f"✓ 库存数据源: 数据集 {cfg['dataset_id']}")
+                self._bi_service = BIInventoryServiceV4()
+            else:
+                print("✓ 库存数据源: 页面卡片 (V3)")
+                self._bi_service = BIInventoryServiceV3()
         return self._bi_service
 
     def _normalize_brand(self, brand: str) -> str:
@@ -215,10 +330,15 @@ class BIDataService:
 
     def _infer_brand(self, item: Dict[str, Any]) -> str:
         """
-        品牌识别规则（可配置）：
-        - 款号以 z 开头 => zihaoselect
-        - 其余默认归为 marius
+        品牌识别：优先 BI「品牌」列，再按款号前缀规则。
         """
+        brand_raw = str(item.get("brand_raw") or item.get("brand") or "").strip()
+        if brand_raw:
+            key = brand_raw.lower().replace(" ", "")
+            if "zihao" in key or "子豪" in brand_raw:
+                return "zihaoselect"
+            if "marius" in key:
+                return "marius"
         sku_id = str(item.get("sku_id", "")).strip().lower()
         brand_mapping = self._rules_config.get("brand_mapping", {})
         brands = brand_mapping.get("brands", {})
@@ -309,6 +429,9 @@ class BIDataService:
         if not allowed:
             return True
         pp = str(product.get("price_position") or "").strip()
+        if not pp:
+            enriched = self._enrich_product_from_raw(dict(product))
+            pp = str(enriched.get("price_position") or "").strip()
         if not pp:
             return False
         for token in allowed:
@@ -526,87 +649,127 @@ class BIDataService:
         
         return products
     
-    def fetch_bi_inventory_data(self) -> List[Dict[str, Any]]:
+    def _load_inventory_snapshot_fallback(self) -> List[Dict[str, Any]]:
+        """数据集拉取超时/失败时，回退到 V4 本地成功快照。"""
+        bi_service = self._get_bi_service()
+        loader = getattr(bi_service, "_load_snapshot", None)
+        if not callable(loader):
+            return []
+        snap = loader()
+        if snap:
+            print(f"✓ BI 拉取未完成，使用本地快照 {len(snap)} 条")
+        return snap or []
+
+    def _convert_bi_raw_items(self, bi_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """将库存服务原始记录转为推荐系统商品结构。"""
+        converted_data: List[Dict[str, Any]] = []
+        valid_categories: Set[str] = set()
+        for item in bi_data:
+            item = self._enrich_product_from_raw(dict(item))
+            sku_id = item.get("sku_id", "")
+            short_name = item.get("name", "")
+            product_name = item.get("product_name", "")
+            category = item.get("category", "其他")
+
+            display_name = short_name
+            if (
+                display_name in ["", "None", None]
+                or "." in str(display_name)
+                or (str(display_name).isdigit() and len(str(display_name)) >= 8)
+            ):
+                display_name = product_name or f"款式-{sku_id}"
+
+            if category and category != "其他":
+                valid_categories.add(category)
+
+            converted_data.append(
+                {
+                    "sku_id": sku_id,
+                    "category": category,
+                    "name": display_name,
+                    "product_name": product_name,
+                    "style_tag": item.get("style_tag", ""),
+                    "brand": self._infer_brand(item),
+                    "price_position": str(item.get("price_position", "") or "").strip(),
+                    "image_url": item.get("image_url", ""),
+                    "price": float(item.get("price") or 0),
+                    "bi_retail_price": item.get("price"),
+                    "bi_unit_cost": item.get("bi_unit_cost"),
+                    "bi_price_ratio": item.get("bi_price_ratio"),
+                    "stock": item.get("stock", 0),
+                    "sales_return_stock": item.get("sales_return_stock", 0),
+                    "inbound": item.get("inbound", 0),
+                    "sales_return_inbound": item.get("sales_return_inbound", 0),
+                    "virtual_cloud_stock": item.get("virtual_cloud_stock", 0),
+                    "order_occupied": item.get("order_occupied", 0),
+                    "available_stock": item.get("available_stock", item.get("stock", 0)),
+                    "sales_qty": int(item.get("sales_qty", 0) or 0),
+                    "net_sales_qty": int(item.get("net_sales_qty", 0) or 0),
+                    "size_completeness": item.get("size_completeness", 0.85),
+                    "return_rate": item.get("return_rate", 0.15),
+                    "conversion_rate": item.get("conversion_rate", 0.05),
+                    "update_time": datetime.now().isoformat(),
+                }
+            )
+
+        print(f"[DEBUG] BI数据转换完成: {len(converted_data)} 条记录")
+        print(f"[DEBUG] 有效品类: {valid_categories}")
+        if len(valid_categories) < 3:
+            print(f"⚠️ BI数据品类异常（只有 {len(valid_categories)} 个有效品类），返回空数据")
+            return []
+        return converted_data
+
+    def fetch_bi_inventory_data(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
         """
         获取BI库存数据
         优先从观远BI系统获取真实数据；真实模式失败时返回空，避免模拟数据污染
         """
+        if force_refresh:
+            self._products_cache = None
+
+        if self._products_cache is not None:
+            return self._products_cache
+
         if self.use_bi_data:
+            fetch_timeout = int(os.getenv("GUANDATA_INVENTORY_FETCH_TIMEOUT", "360") or 360)
+            bi_data: List[Dict[str, Any]] = []
             try:
                 bi_service = self._get_bi_service()
-                # 防止 BI 请求长时间阻塞接口
+
+                def _pull_inventory() -> List[Dict[str, Any]]:
+                    if isinstance(bi_service, BIInventoryServiceV4):
+                        return bi_service.fetch_inventory_data(
+                            use_cache=True, force_refresh=force_refresh
+                        )
+                    return bi_service.fetch_inventory_data(use_cache=not force_refresh)
+
                 executor = ThreadPoolExecutor(max_workers=1)
                 try:
-                    future = executor.submit(bi_service.fetch_inventory_data)
-                    bi_data = future.result(timeout=150)
+                    future = executor.submit(_pull_inventory)
+                    bi_data = future.result(timeout=fetch_timeout) or []
                 finally:
                     executor.shutdown(wait=False, cancel_futures=True)
-                if bi_data and len(bi_data) > 0:
-                    # 将BI数据格式转换为推荐系统格式
-                    converted_data = []
-                    valid_categories = set()
-                    for item in bi_data:
-                        # 直接使用BI返回的品类和名称
-                        sku_id = item.get('sku_id', '')
-                        short_name = item.get('name', '')
-                        product_name = item.get('product_name', '')
-                        category = item.get('category', '其他')
-
-                        # 名称优先级：小名 -> 产品名称 -> sku_id
-                        display_name = short_name
-                        if (
-                            display_name in ['', 'None', None]
-                            or '.' in str(display_name)
-                            or (str(display_name).isdigit() and len(str(display_name)) >= 8)
-                        ):
-                            display_name = product_name or f"款式-{sku_id}"
-                        
-                        # 检查品类是否有效
-                        if category and category != '其他':
-                            valid_categories.add(category)
-                        
-                        converted_data.append({
-                            "sku_id": sku_id,
-                            "category": category,
-                            "name": display_name,
-                            "product_name": product_name,
-                            "style_tag": item.get('style_tag', ''),
-                            "brand": self._infer_brand(item),
-                            "price_position": str(item.get("price_position", "") or "").strip(),
-                            "image_url": item.get('image_url', ''),
-                            "price": item.get('price', 299),
-                            "stock": item.get('stock', 0),
-                            "sales_return_stock": item.get('sales_return_stock', 0),
-                            "inbound": item.get('inbound', 0),
-                            "sales_return_inbound": item.get('sales_return_inbound', 0),
-                            "virtual_cloud_stock": item.get('virtual_cloud_stock', 0),
-                            "order_occupied": item.get('order_occupied', 0),
-                            "available_stock": item.get('available_stock', item.get('stock', 0)),
-                            "sales_qty": int(item.get("sales_qty", 0) or 0),
-                            "net_sales_qty": int(item.get("net_sales_qty", 0) or 0),
-                            "size_completeness": item.get('size_completeness', 0.85),
-                            "return_rate": item.get('return_rate', 0.15),
-                            "conversion_rate": item.get('conversion_rate', 0.05),
-                            "update_time": datetime.now().isoformat()
-                        })
-                    
-                    print(f"[DEBUG] BI数据转换完成: {len(converted_data)} 条记录")
-                    print(f"[DEBUG] 有效品类: {valid_categories}")
-                    
-                    # 品类过少通常表示抓取异常，返回空等待重试
-                    if len(valid_categories) < 3:
-                        print(f"⚠️ BI数据品类异常（只有 {len(valid_categories)} 个有效品类），返回空数据")
-                        return []
-                    
-                    return converted_data
             except FuturesTimeoutError:
-                print("从BI获取数据超时，返回空数据")
+                print(f"从BI获取数据超时（>{fetch_timeout}s），尝试本地快照")
+                bi_data = self._load_inventory_snapshot_fallback()
             except Exception as e:
-                print(f"从BI获取数据失败: {e}，返回空数据")
+                print(f"从BI获取数据失败: {e}，尝试本地快照")
+                bi_data = self._load_inventory_snapshot_fallback()
+
+            if not bi_data:
+                bi_data = self._load_inventory_snapshot_fallback()
+
+            if bi_data:
+                converted = self._convert_bi_raw_items(bi_data)
+                if converted:
+                    self._products_cache = converted
+                    return converted
             return []
 
         # 仅在明确配置 use_bi_data=False 时才使用模拟数据
-        return self._generate_mock_products()
+        mock = self._generate_mock_products()
+        self._products_cache = mock
+        return mock
     
     def _infer_category(self, name: str) -> str:
         """根据商品名称推断品类"""
@@ -823,6 +986,24 @@ class BIDataService:
                 seen.add(c)
         return out
 
+    def _solar_term_overlay(self, solar_term: str) -> Tuple[List[str], str]:
+        """从配置读取当前节气对应的叠加品类。"""
+        if not solar_term:
+            return [], ""
+        for ov in self._rules_config.get("solar_term_overlays", []):
+            if not isinstance(ov, dict):
+                continue
+            terms = ov.get("terms") or []
+            if solar_term in terms:
+                cats = [
+                    str(c).strip()
+                    for c in (ov.get("categories") or [])
+                    if isinstance(c, str) and str(c).strip()
+                ]
+                desc = str(ov.get("description") or f"节气「{solar_term}」中长期备货参考")
+                return cats, desc
+        return [], ""
+
     def _get_bi_categories_for_weather(
         self,
         avg_temp: float,
@@ -830,7 +1011,8 @@ class BIDataService:
         avg_humidity: float = 60,
         avg_wind_scale: float = 3,
         season: str = "spring",
-        national_rainy_city_count: int = 0
+        national_rainy_city_count: int = 0,
+        solar_term: str = "",
     ) -> Tuple[List[Dict[str, Any]], List[str], float, float, Set[str]]:
         """
         根据温度/湿度/风力/季节/全国雨情返回推荐规则。
@@ -940,6 +1122,24 @@ class BIDataService:
                     mapped = self.EXCEL_TO_BI_CATEGORY.get(excel_cat, [])
                     bi_categories.update(mapped)
                     _append_categories_to_order(mapped)
+
+        # 5) 节气叠加（超越 16 天数值预报的中长期节奏；高温天不并入厚重外套）
+        solar_cats, solar_desc = self._solar_term_overlay(solar_term)
+        if solar_cats:
+            merge_cats = set(solar_cats)
+            if adjusted_temp >= self.OUTERWEAR_STRIP_MIN_ADJ_TEMP:
+                merge_cats -= self.HOT_DAY_STRIPPED_OUTERWEAR
+            solar_rule = {
+                "name": "节气",
+                "label": f"节气·{solar_term}",
+                "description": solar_desc,
+                "excel_categories": [],
+                "bi_categories_direct": list(solar_cats),
+            }
+            matched_rules.append(solar_rule)
+            if merge_cats:
+                bi_categories.update(merge_cats)
+                _append_categories_to_order(sorted(merge_cats))
 
         # 暖热体感：去掉大衣/短外套/风衣（与叠加规则无关；来自 Excel「薄外套」等对 BI 的固定映射）
         if adjusted_temp >= self.OUTERWEAR_STRIP_MIN_ADJ_TEMP:
@@ -1193,6 +1393,7 @@ class BIDataService:
         avg_wind_scale: float = 3,
         season: str = "spring",
         national_rainy_city_count: int = 0,
+        solar_term: str = "",
         brand: str = "all"
     ) -> Dict[str, Any]:
         """
@@ -1217,6 +1418,7 @@ class BIDataService:
                 avg_wind_scale=avg_wind_scale,
                 season=season,
                 national_rainy_city_count=national_rainy_city_count,
+                solar_term=solar_term,
             )
         )
 
@@ -1351,6 +1553,7 @@ class BIDataService:
         rule_desc = " + ".join(r["description"] for r in matched_rules)
 
         return {
+            "solar_term": solar_term,
             "weather_labels": rule_labels,
             "weather_desc": rule_desc,
             "recommended_categories": sorted_categories,
@@ -1446,6 +1649,7 @@ class BIDataService:
             "estimated_total_net_sales": net_sales,
             "estimated_total_net_sales_note": "口径：观远「款净销量」字段（历史/统计周期以 BI 卡片为准）",
             "retail_price": price if price > 0 else None,
+            "price_ratio": self._get_price_ratio(product),
             "gross_margin_rate": margin,
             "size_completeness": product.get("size_completeness", 0.85),
             "uses_procurement_inbound": recommend_tag in ("引流款", "利润款"),
@@ -1506,6 +1710,9 @@ class BIDataService:
                     a = int(p.get("available_stock", p.get("stock", 0)) or 0)
                     if a < min_avail:
                         return False
+                ratio = self._get_price_ratio(p)
+                if ratio is not None and ratio > profit_ratio_min:
+                    return True
                 cost = self._get_unit_cost(p)
                 price = self._get_effective_retail_price(p)
                 if cost is None or float(cost) <= 0 or price <= 0 or price <= float(cost):

@@ -7,7 +7,7 @@ import os
 # Open-Meteo API 是免费的，无需 API Key
 # 文档: https://open-meteo.com/
 
-# 飞书：密钥仅从环境变量读取（本地复制 .env.example → .env；Railway 填 Variables）
+# 飞书：密钥仅从环境变量读取（本地复制 .env.example → .env；生产环境填环境变量）
 # https://open.feishu.cn/app/
 FEISHU_CONFIG = {
     "app_id": os.getenv("FEISHU_APP_ID", ""),

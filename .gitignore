@@ -40,6 +40,7 @@ app_users.json
 
 # Debug/test outputs
 bi_*.json
+ds_diag_sample.json
 bi_*.png
 dashboard_data.json
 recommendations.json

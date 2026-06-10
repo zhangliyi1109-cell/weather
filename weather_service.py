@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from config import CITIES
+from solar_terms import annotate_forecast_days
 
 
 class WeatherService:
@@ -355,8 +356,9 @@ class WeatherService:
                 "forecast": []
             }
             
+            raw_forecast = []
             for day in data.get("daily", []):
-                city_data["forecast"].append({
+                raw_forecast.append({
                     "date": day.get("fxDate"),
                     "week": self._get_weekday(day.get("fxDate")),
                     "temp_max": int(day.get("tempMax", 0)),
@@ -372,6 +374,7 @@ class WeatherService:
                     "sunrise": day.get("sunrise"),
                     "sunset": day.get("sunset")
                 })
+            city_data["forecast"] = annotate_forecast_days(raw_forecast)
             
             formatted["cities"].append(city_data)
         
