@@ -23,7 +23,7 @@
       "低"
     ],
     "inventory_min_main_warehouse_stock": 200,
-    "roles_min_available_stock": 0,
+    "roles_min_available_stock": 100,
     "inventory_require_zero_procurement_inbound": true
   },
   "rain_overlay_categories": [
@@ -33,39 +33,106 @@
   ],
   "solar_term_overlays": [
     {
-      "terms": ["立春", "雨水", "惊蛰"],
-      "categories": ["风衣", "衬衫", "针织衫", "西装"],
-      "description": "早春换季：薄外套与针织叠穿，南北分货"
+      "categories": [
+        "风衣",
+        "衬衫",
+        "针织衫",
+        "西装"
+      ],
+      "description": "早春换季：薄外套与针织叠穿，南北分货",
+      "terms": [
+        "立春",
+        "雨水",
+        "惊蛰"
+      ]
     },
     {
-      "terms": ["春分", "清明", "谷雨"],
-      "categories": ["连衣裙", "半身裙", "衬衫", "T恤"],
-      "description": "仲春暮春：裙装与衬衫为主力波段"
+      "categories": [
+        "连衣裙",
+        "半身裙",
+        "衬衫",
+        "T恤"
+      ],
+      "description": "仲春暮春：裙装与衬衫为主力波段",
+      "terms": [
+        "春分",
+        "清明",
+        "谷雨"
+      ]
     },
     {
-      "terms": ["立夏", "小满", "芒种"],
-      "categories": ["T恤", "连衣裙", "背心/吊带", "半身裙"],
-      "description": "入夏升温：短袖与裙装加大曝光"
+      "categories": [
+        "T恤",
+        "连衣裙",
+        "背心/吊带",
+        "半身裙"
+      ],
+      "description": "入夏升温：短袖与裙装加大曝光",
+      "terms": [
+        "立夏",
+        "小满",
+        "芒种"
+      ]
     },
     {
-      "terms": ["夏至", "小暑", "大暑"],
-      "categories": ["T恤", "背心/吊带", "连衣裙", "休闲裤"],
-      "description": "盛夏酷热：清凉透气款为核心"
+      "categories": [
+        "T恤",
+        "背心/吊带",
+        "连衣裙",
+        "休闲裤"
+      ],
+      "description": "盛夏酷热：清凉透气款为核心",
+      "terms": [
+        "夏至",
+        "小暑",
+        "大暑"
+      ]
     },
     {
-      "terms": ["立秋", "处暑", "白露"],
-      "categories": ["针织衫", "衬衫", "风衣", "西装"],
-      "description": "初秋过渡：针织与薄风衣起量，兼顾秋老虎"
+      "categories": [
+        "针织衫",
+        "衬衫",
+        "风衣",
+        "西装"
+      ],
+      "description": "初秋过渡：针织与薄风衣起量，兼顾秋老虎",
+      "terms": [
+        "立秋",
+        "处暑",
+        "白露"
+      ]
     },
     {
-      "terms": ["秋分", "寒露", "霜降"],
-      "categories": ["风衣", "卫衣", "牛仔裤", "大衣", "针织衫"],
-      "description": "深秋：外套厚度提升，牛仔卫衣转化窗"
+      "categories": [
+        "风衣",
+        "卫衣",
+        "牛仔裤",
+        "大衣",
+        "针织衫"
+      ],
+      "description": "深秋：外套厚度提升，牛仔卫衣转化窗",
+      "terms": [
+        "秋分",
+        "寒露",
+        "霜降"
+      ]
     },
     {
-      "terms": ["立冬", "小雪", "大雪", "冬至", "小寒", "大寒"],
-      "categories": ["羽绒服", "大衣", "针织衫", "卫衣"],
-      "description": "冬令：羽绒与大衣为核心备货"
+      "categories": [
+        "羽绒服",
+        "大衣",
+        "针织衫",
+        "卫衣"
+      ],
+      "description": "冬令：羽绒与大衣为核心备货",
+      "terms": [
+        "立冬",
+        "小雪",
+        "大雪",
+        "冬至",
+        "小寒",
+        "大寒"
+      ]
     }
   ],
   "temperature_rules": [
